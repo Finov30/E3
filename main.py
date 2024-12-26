@@ -1,27 +1,79 @@
 import pandas as pd
-from utils import prepare_data, lazy_evaluate_models
+import numpy as np
 import logging
+from datetime import datetime
+import os
+from utils import (
+    load_and_preprocess_data,
+    calculate_response_metrics,
+    create_visualizations,
+    prepare_text_features,
+    train_ticket_classifier,
+    save_model_and_artifacts
+)
 
-# Configurer la journalisation
-logging.basicConfig(filename='ticket_classification.log', level=logging.INFO, 
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f'support_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.StreamHandler()
+    ]
+)
 
-try:
-    # Charger le dataset
-    df = pd.read_csv('C:\\Users\\samua\\Desktop\\Project E2 V4\\customer_support_tickets.csv')
-    logging.info('Dataset chargé avec succès.')
+def main():
+    try:
+        # Création des répertoires nécessaires
+        os.makedirs('./visualizations', exist_ok=True)
+        os.makedirs('./models', exist_ok=True)
+        
+        # Chargement et prétraitement des données
+        logging.info("Chargement des données...")
+        df = load_and_preprocess_data('./customer_support_tickets.csv')
+        logging.info(f"Données chargées avec succès. Shape: {df.shape}")
 
-    # Préparer les données
-    X_train, X_test, y_train, y_test, label_encoder = prepare_data(df)
-    logging.info('Données préparées avec succès.')
+        # Calcul des métriques de performance
+        logging.info("Calcul des métriques de performance...")
+        metrics = calculate_response_metrics(df)
+        logging.info("Métriques calculées:")
+        for metric, value in metrics.items():
+            logging.info(f"{metric}: {value}")
 
-    # Entraîner et évaluer les modèles avec LazyPredict
-    models, predictions, vectorizer = lazy_evaluate_models(X_train, X_test, y_train, y_test)
-    logging.info('Évaluation des modèles terminée.')
+        # Création des visualisations
+        logging.info("Création des visualisations...")
+        create_visualizations(df)
+        logging.info("Visualisations créées avec succès")
 
-    print("Résultats de l'évaluation des modèles avec LazyPredict:\n")
-    print(models)  # Affiche la perf de chaque modèle
+        # Préparation des caractéristiques pour le modèle
+        logging.info("Préparation des caractéristiques...")
+        X, vectorizer = prepare_text_features(df)
+        y = df['Ticket Type']
+        
+        # Entraînement du modèle
+        logging.info("Entraînement du modèle de classification...")
+        model, classification_rep, conf_matrix = train_ticket_classifier(X, y)
+        logging.info("Rapport de classification:")
+        logging.info(classification_rep)
 
-except Exception as e:
-    logging.error(f'Une erreur est survenue : {e}')
-    print(f'Une erreur est survenue : {e}')
+        # Sauvegarde du modèle et des artefacts
+        logging.info("Sauvegarde du modèle et des artefacts...")
+        save_model_and_artifacts(model, vectorizer, None)
+        
+        logging.info("Analyse terminée avec succès!")
+        
+        # Affichage des résultats principaux
+        print("\
+Résultats principaux:")
+        print("=====================")
+        print(f"Nombre total de tickets: {len(df)}")
+        print(f"Types de tickets uniques: {df['Ticket Type'].nunique()}")
+        print(f"Satisfaction client moyenne: {metrics['satisfaction_score']:.2f}")
+        print(f"Temps moyen de résolution (heures): {metrics['avg_resolution_time']:.2f}")
+        
+    except Exception as e:
+        logging.error(f"Erreur lors de l'exécution: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    main()
