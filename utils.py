@@ -2,109 +2,89 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split
-import joblib
-import json
-import os
+import mlflow
+import mlflow.sklearn
+import matplotlib.pyplot as plt
+import seaborn as sns
 from datetime import datetime
-from nltk.sentiment import SentimentIntensityAnalyzer
 import logging
+import os
+import json
 
-class ModelMonitor:
-    def __init__(self):
-        self.metrics = {}
-        self.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def train_and_evaluate_models(X_train, X_test, y_train, y_test, sample_input, experiment_name="Customer_Support_Classification"):
+    """Train and evaluate models with proper MLflow tracking and model signatures"""
     
-    def to_dict(self):
-        return {
-            "metrics": self.metrics,
-            "timestamp": self.timestamp
-        }
-
-def load_and_preprocess_data(file_path):
-    df = pd.read_csv(file_path)
+    # Ensure the experiment exists
+    mlflow.set_experiment(experiment_name)
     
-    # Convert date columns
-    date_columns = ['Created Date', 'Resolution Date']
-    for col in date_columns:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors='coerce')
-    
-    # Handle missing values
-    df = df.fillna({
-        'Ticket Description': 'No description provided',
-        'Ticket Priority': 'Medium',
-        'Ticket Type': 'Other'
-    })
-    
-    # Add sentiment analysis
-    sia = SentimentIntensityAnalyzer()
-    df['sentiment_score'] = df['Ticket Description'].apply(
-        lambda x: sia.polarity_scores(str(x))['compound']
-    )
-    
-    return df
-
-def calculate_response_metrics(df):
-    metrics = {}
-    
-    # Calculate average response time
-    if 'Created Date' in df.columns and 'Resolution Date' in df.columns:
-        df['response_time'] = (df['Resolution Date'] - df['Created Date']).dt.total_seconds() / 3600
-        metrics['avg_response_time_hours'] = df['response_time'].mean()
-    
-    # Calculate satisfaction metrics if available
-    if 'Customer Satisfaction' in df.columns:
-        metrics['avg_satisfaction'] = df['Customer Satisfaction'].mean()
-    
-    # Calculate sentiment metrics
-    if 'sentiment_score' in df.columns:
-        metrics['avg_sentiment'] = df['sentiment_score'].mean()
-    
-    return metrics
-
-def prepare_text_features(df):
-    vectorizer = TfidfVectorizer(
-        max_features=1000,
-        stop_words='english',
-        ngram_range=(1, 2)
-    )
-    
-    X = vectorizer.fit_transform(df['Ticket Description'].astype(str))
-    return X, vectorizer
-
-def train_ticket_classifier(X, y):
-    model = RandomForestClassifier(
-        n_estimators=100,
-        random_state=42
-    )
-    model.fit(X, y)
-    return model
-
-def save_model_and_artifacts(model, vectorizer, monitor, version="1.0"):
-    # Create directory if it doesn't exist
-    os.makedirs('./models', exist_ok=True)
-    
-    # Save the model and vectorizer using joblib
-    model_path = os.path.join('./models', f'ticket_classifier_v{version}.joblib')
-    vectorizer_path = os.path.join('./models', f'vectorizer_v{version}.joblib')
-    
-    joblib.dump(model, model_path)
-    joblib.dump(vectorizer, vectorizer_path)
-    
-    # Save configuration and metrics
-    config = {
-        'version': version,
-        'model_path': model_path,
-        'vectorizer_path': vectorizer_path,
-        'model_params': model.get_params(),
-        'vectorizer_params': vectorizer.get_params(),
-        'monitor': monitor.to_dict(),
-        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    models = {
+        'RandomForest': RandomForestClassifier(n_estimators=100, random_state=42),
+        'LogisticRegression': LogisticRegression(max_iter=1000, random_state=42),
+        'SVM': SVC(kernel='linear', random_state=42, probability=True)
     }
     
-    config_path = os.path.join('./models', f'config_v{version}.json')
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=4, default=str)
+    results = {}
+    for name, model in models.items():
+        with mlflow.start_run(run_name=name):
+            # Train model
+            model.fit(X_train, y_train)
+            
+            # Log metrics
+            train_score = model.score(X_train, y_train)
+            test_score = model.score(X_test, y_test)
+            
+            mlflow.log_metric("train_accuracy", train_score)
+            mlflow.log_metric("test_accuracy", test_score)
+            
+            # Log model with signature
+            signature = mlflow.models.infer_signature(
+                sample_input,
+                model.predict(sample_input)
+            )
+            
+            mlflow.sklearn.log_model(
+                model,
+                name,
+                signature=signature,
+                input_example=sample_input
+            )
+            
+            results[name] = {
+                'train_score': train_score,
+                'test_score': test_score,
+                'model': model
+            }
+            
+            # Log parameters
+            mlflow.log_params(model.get_params())
     
-    logging.info(f"Model and artifacts saved successfully to {os.path.abspath('./models')}")
+    return results
+
+def visualize_model_comparison(results, save_path=None):
+    """Create and save model comparison visualization with non-blocking display"""
+    plt.figure(figsize=(10, 6))
+    
+    models = list(results.keys())
+    train_scores = [results[m]['train_score'] for m in models]
+    test_scores = [results[m]['test_score'] for m in models]
+    
+    x = np.arange(len(models))
+    width = 0.35
+    
+    plt.bar(x - width/2, train_scores, width, label='Train Score')
+    plt.bar(x + width/2, test_scores, width, label='Test Score')
+    
+    plt.xlabel('Models')
+    plt.ylabel('Accuracy')
+    plt.title('Model Performance Comparison')
+    plt.xticks(x, models)
+    plt.legend()
+    
+    if save_path:
+        plt.savefig(save_path)
+        plt.close()  # Close the figure to prevent display blocking
+    
+    return plt

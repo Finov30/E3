@@ -1,0 +1,16 @@
+artifact_uri: file:///C:/Users/samua/Desktop/Project E2 V4/Project E2 V5/Project E2
+  V6/mlruns/603210646739391005/82ed2f3729394c8094950d44a08fd8ce/artifacts
+end_time: 1736180919757
+entry_point_name: ''
+experiment_id: '603210646739391005'
+lifecycle_stage: active
+run_id: 82ed2f3729394c8094950d44a08fd8ce
+run_name: LogisticRegression
+run_uuid: 82ed2f3729394c8094950d44a08fd8ce
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1736180911174
+status: 3
+tags: []
+user_id: samua

@@ -1,0 +1,16 @@
+artifact_uri: file:///C:/Users/samua/Desktop/Project E2 V4/Project E2 V5/Project E2
+  V6/mlruns/603210646739391005/ef8be3c11b574a2397121ac1f4ce2f96/artifacts
+end_time: 1736180911160
+entry_point_name: ''
+experiment_id: '603210646739391005'
+lifecycle_stage: active
+run_id: ef8be3c11b574a2397121ac1f4ce2f96
+run_name: RandomForest
+run_uuid: ef8be3c11b574a2397121ac1f4ce2f96
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1736180889863
+status: 3
+tags: []
+user_id: samua

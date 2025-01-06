@@ -1,72 +1,61 @@
-
-import pandas as pd
 import logging
-from datetime import datetime
 import os
-import nltk
-
-# Download required NLTK data at startup
-try:
-    nltk.download('vader_lexicon', quiet=True)
-except Exception as e:
-    logging.error(f"Failed to download NLTK resources: {str(e)}")
-
 from utils import (
-    load_and_preprocess_data,
-    calculate_response_metrics,
-    prepare_text_features,
-    train_ticket_classifier,
-    save_model_and_artifacts,
-    ModelMonitor
+    train_and_evaluate_models,
+    visualize_model_comparison
+)
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+import pandas as pd
+import mlflow
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 def main():
     try:
-        # Create necessary directories
-        os.makedirs('./visualizations', exist_ok=True)
-        os.makedirs('./models', exist_ok=True)
-        
         # Load and preprocess data
-        logging.info("Loading data...")
-        df = load_and_preprocess_data('./customer_support_tickets.csv')
-        logging.info(f"Data loaded successfully. Shape: {df.shape}")
-
-        # Calculate performance metrics
-        logging.info("Calculating performance metrics...")
-        metrics = calculate_response_metrics(df)
-        logging.info("Metrics calculated:")
-        for metric, value in metrics.items():
-            logging.info(f"{metric}: {value}")
-
-        # Prepare features for the model
-        logging.info("Preparing features...")
-        X, vectorizer = prepare_text_features(df)
+        logging.info("Loading and preprocessing data...")
+        df = pd.read_csv('./customer_support_tickets.csv')
         
-        # Encode target variable
-        logging.info("Encoding target variable...")
+        # Prepare features
+        logging.info("Preparing text features...")
+        vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
+        X = vectorizer.fit_transform(df['Ticket Description'].astype(str))
         y = df['Ticket Priority']
         
-        # Train the classifier
-        logging.info("Training the classifier...")
-        model = train_ticket_classifier(X, y)
+        # Create sample input for model signature
+        sample_input = pd.DataFrame(
+            vectorizer.transform(['Sample ticket description']).toarray(),
+            columns=vectorizer.get_feature_names_out()
+        )
         
-        # Save the model and artifacts
-        logging.info("Saving the model and artifacts...")
-        monitor = ModelMonitor()
-        save_model_and_artifacts(model, vectorizer, monitor, version="1.0")
-        logging.info("Model and artifacts saved successfully.")
-
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        # Train and evaluate models
+        logging.info("Training and evaluating models...")
+        results = train_and_evaluate_models(
+            X_train, X_test, y_train, y_test,
+            sample_input,
+            experiment_name="Customer_Support_Classification"
+        )
+        
+        # Generate and save visualization
+        logging.info("Generating model comparison visualization...")
+        plt = visualize_model_comparison(results, save_path='./model_comparison.png')
+        plt.close()  # Ensure the plot is closed
+        
+        logging.info("Pipeline completed successfully!")
+        
     except Exception as e:
-        logging.error(f"An error occurred: {str(e)}")
+        logging.error(f"Error in pipeline: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(f'support_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
-            logging.StreamHandler()
-        ]
-    )
     main()

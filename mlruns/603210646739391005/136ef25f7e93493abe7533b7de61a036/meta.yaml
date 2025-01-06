@@ -1,0 +1,16 @@
+artifact_uri: file:///C:/Users/samua/Desktop/Project E2 V4/Project E2 V5/Project E2
+  V6/mlruns/603210646739391005/136ef25f7e93493abe7533b7de61a036/artifacts
+end_time: 1736181116584
+entry_point_name: ''
+experiment_id: '603210646739391005'
+lifecycle_stage: active
+run_id: 136ef25f7e93493abe7533b7de61a036
+run_name: SVM
+run_uuid: 136ef25f7e93493abe7533b7de61a036
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1736181053218
+status: 3
+tags: []
+user_id: samua
