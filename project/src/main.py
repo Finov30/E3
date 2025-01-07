@@ -1,72 +1,74 @@
 import logging
-import os
-from configuration.config import Config
+import mlflow
+import time
+import requests
 from utils import visualization, data_preprocessing, model_training
 from utils.data_preprocessing import DataPreprocessor
 from utils.model_training import ModelTrainer
 from utils.visualization import Visualizer
 
-def setup_logging():
-    """Setup logging configuration"""
-    os.makedirs(Config.LOGS_DIR, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format=Config.LOG_FORMAT,
-        handlers=[
-            logging.FileHandler(Config.LOG_FILE),
-            logging.StreamHandler()
-        ]
-    )
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+def start_mlflow_server():
+    try:
+        requests.get('http://localhost:4000')
+        logging.info("MLflow server is already running")
+    except:
+        logging.info("Starting MLflow server...")
+        import subprocess
+        subprocess.Popen(["mlflow", "ui", "--host", "0.0.0.0", "--port", "4000"])
+        time.sleep(5)
+        logging.info("MLflow server started")
 
 def main():
-    # Setup logging
-    setup_logging()
-    
     try:
+        # Start MLflow server
+        start_mlflow_server()
+        
+        # Set MLflow tracking URI
+        mlflow.set_tracking_uri('http://localhost:4000')
+        
         # Initialize components
-        preprocessor = DataPreprocessor(max_features=Config.MAX_FEATURES)
-        trainer = ModelTrainer()
+        preprocessor = DataPreprocessor(max_features=5000, n_components=100)
+        model_trainer = ModelTrainer()
         visualizer = Visualizer()
         
         # Load and preprocess data
         logging.info("Loading and preprocessing data...")
-        df = preprocessor.load_data(Config.DATA_FILE)
+        df = preprocessor.load_data('project\src\data\customer_support_tickets.csv')
         
         # Prepare features
-        logging.info("Preparing text features...")
         X, y = preprocessor.prepare_features(df)
         
-        # Create sample input for model signature
-        sample_input = preprocessor.create_sample_input()
+        # Split the data
+        X_train, X_test, y_train, y_test = preprocessor.split_data(X, y)
         
-        # Split data
-        X_train, X_test, y_train, y_test = preprocessor.split_data(
-            X, y,
-            test_size=Config.TEST_SIZE,
-            random_state=Config.RANDOM_STATE
-        )
+        # Set experiment name
+        experiment_name = "ticket_classification"
+        mlflow.set_experiment(experiment_name)
         
         # Train and evaluate models
         logging.info("Training and evaluating models...")
-        results = trainer.train_and_evaluate(
+        results = model_trainer.train_and_evaluate(
             X_train, X_test, y_train, y_test,
-            sample_input,
-            Config.EXPERIMENT_NAME
+            experiment_name
         )
         
-        # Generate and save visualization
-        logging.info("Generating model comparison visualization...")
-        plt = visualizer.plot_model_comparison(
-            results,
-            save_path=Config.PLOT_SAVE_PATH
-        )
-        plt.close()
+        # Generate visualizations
+        logging.info("Generating visualizations...")
+        comparison_plot = visualizer.plot_model_comparison(results)
+        comparison_plot.savefig('model_comparison.png')
         
         logging.info("Pipeline completed successfully!")
         
     except Exception as e:
         logging.error(f"Error in pipeline: {str(e)}")
         raise
+    finally:
+        logging.info("Pipeline execution completed")
 
 if __name__ == "__main__":
     main()

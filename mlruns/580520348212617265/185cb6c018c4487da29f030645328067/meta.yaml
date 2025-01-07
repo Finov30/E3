@@ -1,0 +1,15 @@
+artifact_uri: file:///C:/Users/samua/Desktop/SM%20Undected%20Chrome%20Driver/Project%20E2%20V7/mlruns/580520348212617265/185cb6c018c4487da29f030645328067/artifacts
+end_time: 1736193107999
+entry_point_name: ''
+experiment_id: '580520348212617265'
+lifecycle_stage: active
+run_id: 185cb6c018c4487da29f030645328067
+run_name: gradient_boosting
+run_uuid: 185cb6c018c4487da29f030645328067
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1736193070696
+status: 3
+tags: []
+user_id: samua

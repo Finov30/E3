@@ -1,0 +1,15 @@
+artifact_uri: file:///C:/Users/samua/Desktop/SM%20Undected%20Chrome%20Driver/Project%20E2%20V7/mlruns/580520348212617265/a8ecf9d5ce324832ae4f603b1634bf19/artifacts
+end_time: 1736193070690
+entry_point_name: ''
+experiment_id: '580520348212617265'
+lifecycle_stage: active
+run_id: a8ecf9d5ce324832ae4f603b1634bf19
+run_name: random_forest
+run_uuid: a8ecf9d5ce324832ae4f603b1634bf19
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1736193014119
+status: 3
+tags: []
+user_id: samua
