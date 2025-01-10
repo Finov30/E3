@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+cryptography
+undetected-chromedriver
+selenium
+python-multipart
+aiofiles
+python-dotenv
+pymysql
+requests
+faker
+email-validator==2.1.0
