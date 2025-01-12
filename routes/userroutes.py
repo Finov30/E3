@@ -1,10 +1,10 @@
 from fastapi import APIRouter, File, UploadFile, HTTPException
 from config.database import conn, engine
 from models.indexmodels import users, addresses
-from schemas.index import users as user_schema, address_table
+from schemas.userschemas import UserResponse, UserCreate, Address, AddressCreate
 from sqlalchemy import select
 from cryptography.fernet import Fernet
-from pydantic import BaseModel, EmailStr, constr
+from pydantic import BaseModel, constr
 from typing import List
 import csv
 import io
@@ -40,7 +40,7 @@ def decrypt_data(data: str) -> str:
 # Modèles pour les utilisateurs
 class UserCreate(BaseModel):
     name: constr(min_length=2, max_length=255)
-    email: EmailStr
+    username: constr(min_length=3, max_length=255)
     password: constr(min_length=8, max_length=255)
 
 class User(UserCreate):
@@ -68,86 +68,186 @@ class Address(BaseModel):
 # Routes pour gérer les utilisateurs et leurs informations
 @user.get("/")
 async def read_data():
-    query = select(users, addresses.c.street, addresses.c.zipcode, addresses.c.country).select_from(
-        users.join(addresses, users.c.id == addresses.c.user_id)
-    )
-    result = conn.execute(query).fetchall()
-    decrypted_result = [
-        {**row._asdict(), 'email': decrypt_data(row.email), 'password': decrypt_data(row.password)}
-        for row in result
-    ]
-    return decrypted_result
+    try:
+        query = select(users, addresses).select_from(
+            users.join(addresses, users.c.id == addresses.c.user_id)
+        )
+        result = conn.execute(query).fetchall()
+        
+        formatted_data = []
+        for row in result:
+            data = {
+                "id": row.id,
+                "name": row.name,
+                "username": decrypt_data(row.username),
+                "address": {
+                    "id": row.addresses_id,
+                    "user_id": row.user_id,
+                    "street": row.street,
+                    "zipcode": row.zipcode,
+                    "country": row.country
+                }
+            }
+            formatted_data.append(data)
+        
+        return formatted_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la lecture des données: {str(e)}"
+        )
 
 @user.post("/users")
-async def create_user(user_data: UserCreate):
+async def create_user(user_data: UserCreate, address_data: AddressCreate):
     try:
-        encrypted_email = encrypt_data(user_data.email)
-        encrypted_password = encrypt_data(user_data.password)
-        query = users.insert().values(
-            name=user_data.name, 
-            email=encrypted_email, 
-            password=encrypted_password
-        )
-        result = conn.execute(query)
-        return {"id": result.inserted_primary_key[0], "name": user_data.name, "email": user_data.email}
+        with engine.begin() as transaction:
+            # Vérifier si le username existe déjà
+            existing_user = transaction.execute(
+                select(users).where(users.c.username == encrypt_data(user_data.username))
+            ).first()
+            
+            if existing_user:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Un utilisateur avec ce nom d'utilisateur existe déjà"
+                )
+
+            # Créer l'utilisateur
+            user_result = transaction.execute(
+                users.insert().values(
+                    name=user_data.name,
+                    username=encrypt_data(user_data.username),
+                    password=encrypt_data(user_data.password)
+                )
+            )
+            user_id = user_result.inserted_primary_key[0]
+            
+            # Créer l'adresse associée
+            address_result = transaction.execute(
+                addresses.insert().values(
+                    user_id=user_id,
+                    street=address_data.street,
+                    zipcode=address_data.zipcode,
+                    country=address_data.country
+                )
+            )
+            
+            return {
+                "user": {
+                    "id": user_id,
+                    "name": user_data.name,
+                    "username": user_data.username
+                },
+                "address": {
+                    "id": address_result.inserted_primary_key[0],
+                    "user_id": user_id,
+                    "street": address_data.street,
+                    "zipcode": address_data.zipcode,
+                    "country": address_data.country
+                }
+            }
+
     except IntegrityError:
         raise HTTPException(
             status_code=400,
-            detail="Un utilisateur avec cet email existe déjà"
+            detail="Un utilisateur avec ce nom d'utilisateur existe déjà"
         )
-    except SQLAlchemyError as e:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail="Erreur lors de la création de l'utilisateur"
+            detail=f"Erreur lors de la création: {str(e)}"
         )
 
 
-@user.get("/users/{user_id}", response_model=User)
+@user.get("/users/{user_id}", response_model=UserResponse)
 async def get_user(user_id: int):
-    query = select(users).where(users.c.id == user_id)
-    result = conn.execute(query).first()
-    if not result:
-        raise HTTPException(status_code=404, detail="User not found")
-    user_data = result._asdict()
-    user_data["email"] = decrypt_data(user_data["email"])
-    user_data["password"] = decrypt_data(user_data["password"])
-    return user_data
+    try:
+        query = select(users).where(users.c.id == user_id)
+        result = conn.execute(query).first()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+        
+        return {
+            "id": result.id,
+            "name": result.name,
+            "username": decrypt_data(result.username)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la lecture de l'utilisateur: {str(e)}"
+        )
 
 @user.get("/addresses/{user_id}", response_model=Address)
-async def get_user_id(user_id: int):
-    query = select(addresses).where(addresses.c.user_id == user_id)
-    result = conn.execute(query).first()
-    if not result:
-        raise HTTPException(status_code=404, detail="Address not found")
-    return dict(result._asdict())
+async def get_user_address(user_id: int):
+    try:
+        query = select(addresses).where(addresses.c.user_id == user_id)
+        result = conn.execute(query).first()
+        
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="Adresse non trouvée pour cet utilisateur"
+            )
+        
+        return {
+            "id": result.id,
+            "user_id": result.user_id,
+            "street": result.street,
+            "zipcode": result.zipcode,
+            "country": result.country
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la lecture de l'adresse: {str(e)}"
+        )
 
 @user.post("/fetch-external-users")
 async def fetch_external_users():
     try:
         users_data = []
         for _ in range(10):
-            user_data = {
-                "name": fake.name(),
-                "email": encrypt_data(fake.email()),
-                "password": encrypt_data(fake.password())
-            }
-            user_query = users.insert().values(**user_data)
-            result = conn.execute(user_query)
-            user_id = result.inserted_primary_key[0]
+            with engine.begin() as transaction:
+                # Générer les données utilisateur
+                username = f"@{fake.user_name()}"
+                user_data = {
+                    "name": fake.name(),
+                    "username": encrypt_data(username),
+                    "password": encrypt_data(fake.password())
+                }
+                
+                # Créer l'utilisateur
+                user_result = transaction.execute(
+                    users.insert().values(**user_data)
+                )
+                user_id = user_result.inserted_primary_key[0]
 
-            # Generate and insert corresponding address
-            address_data = {
-                "user_id": user_id,
-                "street": fake.street_address(),
-                "zipcode": fake.postcode(),
-                "country": fake.country()
-            }
-            address_query = addresses.insert().values(**address_data)
-            conn.execute(address_query)
+                # Générer et créer l'adresse associée
+                address_data = {
+                    "user_id": user_id,
+                    "street": fake.street_address(),
+                    "zipcode": fake.postcode(),
+                    "country": "France"
+                }
+                address_result = transaction.execute(
+                    addresses.insert().values(**address_data)
+                )
 
-            users_data.append({**user_data, **address_data})
+                users_data.append({
+                    "user": {
+                        "id": user_id,
+                        "name": user_data["name"],
+                        "username": username
+                    },
+                    "address": {
+                        "id": address_result.inserted_primary_key[0],
+                        **address_data
+                    }
+                })
 
-        return {"message": "Users and addresses created successfully", "users": users_data}
+        return {"message": "Utilisateurs et adresses créés avec succès", "users": users_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -200,9 +300,25 @@ async def create_address(address_data: AddressCreate, user_id: int):
 
 @user.get("/addresses/", response_model=List[Address])
 async def read_addresses():
-    query = select(addresses)
-    result = conn.execute(query).fetchall()
-    return [dict(row._asdict()) for row in result]
+    try:
+        query = select(addresses)
+        result = conn.execute(query).fetchall()
+        
+        return [
+            {
+                "id": row.id,
+                "user_id": row.user_id,
+                "street": row.street,
+                "zipcode": row.zipcode,
+                "country": row.country
+            }
+            for row in result
+        ]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la lecture des adresses: {str(e)}"
+        )
 
 @user.get("/addresses/{address_id}", response_model=Address)
 async def read_address(address_id: int):
@@ -223,7 +339,7 @@ async def upload_csv(file: UploadFile = File(...)):
         csv_reader = csv.DictReader(csv_data)
         
         # Vérification des colonnes requises (sans les IDs)
-        required_columns = {'name', 'email', 'password', 'street', 'zipcode', 'country'}
+        required_columns = {'name', 'username', 'password', 'street', 'zipcode', 'country'}
         csv_columns = set(csv_reader.fieldnames) if csv_reader.fieldnames else set()
         
         missing_columns = required_columns - csv_columns
@@ -239,7 +355,7 @@ async def upload_csv(file: UploadFile = File(...)):
                 # Validation des données utilisateur
                 user_data = {
                     "name": row['name'],
-                    "email": row['email'],
+                    "username": row['username'],
                     "password": row['password']
                 }
                 
@@ -256,7 +372,7 @@ async def upload_csv(file: UploadFile = File(...)):
                     user_result = transaction.execute(
                         users.insert().values(
                             name=user_data['name'],
-                            email=encrypt_data(user_data['email']),
+                            username=encrypt_data(user_data['username']),
                             password=encrypt_data(user_data['password'])
                         )
                     )
@@ -276,7 +392,7 @@ async def upload_csv(file: UploadFile = File(...)):
                     "user": {
                         "id": user_id,
                         "name": user_data['name'],
-                        "email": user_data['email']
+                        "username": user_data['username']
                     },
                     "address": {
                         "street": address_data['street'],
@@ -288,7 +404,7 @@ async def upload_csv(file: UploadFile = File(...)):
             except IntegrityError:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"L'email {row['email']} existe déjà dans la base de données"
+                    detail=f"Le nom d'utilisateur {row['username']} existe déjà dans la base de données"
                 )
             except Exception as e:
                 raise HTTPException(
@@ -333,27 +449,41 @@ async def extraire_donnees_tableau():
         for row in rows:
             cells = row.find_elements(By.TAG_NAME, "td")
             with engine.begin() as transaction:
+                username = f"@{cells[3].text}"
+                name = f"{cells[1].text} {cells[2].text}"
+                
                 # Créer l'utilisateur
-                user_result = transaction.execute(users.insert().values(
-                    name=f"{cells[1].text} {cells[2].text}",
-                    email=encrypt_data(cells[3].text),
-                    password=encrypt_data(f"{cells[1].text}{cells[2].text}")
-                ))
+                user_result = transaction.execute(
+                    users.insert().values(
+                        name=name,
+                        username=encrypt_data(username),
+                        password=encrypt_data(f"{name}123")
+                    )
+                )
                 user_id = user_result.inserted_primary_key[0]
 
-                # Créer l'adresse
-                address_result = transaction.execute(addresses.insert().values(
-                    user_id=user_id,
-                    street=f"{cells[1].text} {cells[2].text} Street",
-                    zipcode="12345",
-                    country="France"
-                ))
+                # Créer l'adresse associée
+                address_result = transaction.execute(
+                    addresses.insert().values(
+                        user_id=user_id,
+                        street=f"{name} Street",
+                        zipcode="12345",
+                        country="France"
+                    )
+                )
                 
                 users_data.append({
-                    "user_id": user_id,
-                    "name": f"{cells[1].text} {cells[2].text}",
-                    "email": cells[3].text,
-                    "address_id": address_result.inserted_primary_key[0]
+                    "user": {
+                        "id": user_id,
+                        "name": name,
+                        "username": username
+                    },
+                    "address": {
+                        "id": address_result.inserted_primary_key[0],
+                        "street": f"{name} Street",
+                        "zipcode": "12345",
+                        "country": "France"
+                    }
                 })
 
     finally:
@@ -365,17 +495,28 @@ async def extraire_donnees_tableau():
 async def create_user_with_address(user_data: UserCreate, address_data: AddressCreate):
     try:
         with engine.begin() as transaction:
+            # Vérifier si le username existe déjà
+            existing_user = transaction.execute(
+                select(users).where(users.c.username == encrypt_data(user_data.username))
+            ).first()
+            
+            if existing_user:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Un utilisateur avec ce nom d'utilisateur existe déjà"
+                )
+
             # Créer l'utilisateur
             user_result = transaction.execute(
                 users.insert().values(
                     name=user_data.name,
-                    email=encrypt_data(user_data.email),
+                    username=encrypt_data(user_data.username),
                     password=encrypt_data(user_data.password)
                 )
             )
             user_id = user_result.inserted_primary_key[0]
             
-            # Créer l'adresse avec l'ID utilisateur généré
+            # Créer l'adresse
             address_result = transaction.execute(
                 addresses.insert().values(
                     user_id=user_id,
@@ -384,30 +525,30 @@ async def create_user_with_address(user_data: UserCreate, address_data: AddressC
                     country=address_data.country
                 )
             )
-            address_id = address_result.inserted_primary_key[0]
             
-        return {
-            "message": "Utilisateur et adresse créés avec succès",
-            "user": {
-                "id": user_id,
-                "name": user_data.name,
-                "email": user_data.email
-            },
-            "address": {
-                "id": address_id,
-                "user_id": user_id,
-                "street": address_data.street,
-                "zipcode": address_data.zipcode,
-                "country": address_data.country
+            return {
+                "message": "Utilisateur et adresse créés avec succès",
+                "user": {
+                    "id": user_id,
+                    "name": user_data.name,
+                    "username": user_data.username
+                },
+                "address": {
+                    "id": address_result.inserted_primary_key[0],
+                    "user_id": user_id,
+                    "street": address_data.street,
+                    "zipcode": address_data.zipcode,
+                    "country": address_data.country
+                }
             }
-        }
+
     except IntegrityError:
         raise HTTPException(
             status_code=400,
-            detail="Un utilisateur avec cet email existe déjà"
+            detail="Un utilisateur avec ce nom d'utilisateur existe déjà"
         )
-    except SQLAlchemyError as e:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail="Erreur lors de la création"
+            detail=f"Erreur lors de la création: {str(e)}"
         )

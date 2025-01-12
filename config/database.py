@@ -1,33 +1,21 @@
-from sqlalchemy import create_engine, MetaData, inspect
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import create_engine, MetaData
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv('DATABASE_URL', "mysql+pymysql://root:rootpassword@localhost:3306/test")
+DATABASE_URL = os.getenv('DATABASE_URL', 'mysql+pymysql://root:root@mysql_db:3306/fastapi_db')
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(DATABASE_URL)
 meta = MetaData()
+conn = engine.connect()
 
 def create_tables():
-    inspector = inspect(engine)
-    existing_tables = inspector.get_table_names()
-    
-    # Créer uniquement les tables manquantes
-    tables_to_create = [table for table in meta.tables.values() if table.name not in existing_tables]
-    
-    if not tables_to_create:
-        print("Toutes les tables existent déjà.")
-        return
-
     try:
-        meta.create_all(engine, tables=tables_to_create)
-        print(f"Tables créées avec succès : {', '.join(table.name for table in tables_to_create)}")
-    except OperationalError as e:
-        print(f"Erreur lors de la création des tables : {e}")
-
-# Appel pour créer les tables si elles n'existent pas
-create_tables()
-
-conn = engine.connect()
+        # Supprime toutes les tables existantes
+        meta.drop_all(engine)
+        # Crée les nouvelles tables
+        meta.create_all(engine)
+        print("Tables créées avec succès")
+    except Exception as e:
+        print(f"Erreur lors de la création des tables: {e}")

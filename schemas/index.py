@@ -1,3 +1,3 @@
-from schemas.userschemas import users, address_table
+from schemas.userschemas import User, UserCreate, Address, AddressCreate
 
-__all__ = ['users', 'addresses']
+__all__ = ['User', 'UserCreate', 'Address', 'AddressCreate']
