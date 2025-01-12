@@ -17,7 +17,7 @@ services:
         condition: service_healthy
     restart: always
     networks:
-      - app_network
+      - app-network
 
   mysql_db:
     image: mysql:8.0
@@ -39,11 +39,11 @@ services:
       start_period: 10s
     restart: always
     networks:
-      - app_network
+      - app-network
 
 volumes:
   mysql_data:
 
 networks:
-  app_network:
-    driver: bridge
+  app-network:
+    name: app-network

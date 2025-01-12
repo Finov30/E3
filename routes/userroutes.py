@@ -19,6 +19,13 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, MetaData, Table
 import random
+from config.monitoring import (
+    REQUESTS_PROCESSING_TIME,
+    DB_OPERATIONS_PROCESSING_TIME,
+    FAILED_OPERATIONS_COUNTER,
+    USER_OPERATIONS_COUNTER
+)
+import time
 
 load_dotenv()  # Chargement des variables d'environnement
 
@@ -224,22 +231,25 @@ async def get_user_address(user_id: int):
 
 @user.post("/fetch-external-users")
 async def fetch_external_users():
+    start_time = time.time()
     try:
         users_data = []
-        for _ in range(10):
-            with engine.begin() as transaction:
-                # Générer les données utilisateur
-                username = f"@{fake.user_name()}"
+        with engine.begin() as transaction:
+            for _ in range(10):
+                # Générer les données utilisateur avec Faker
+                fake_name = fake.name()
+                username = f"@{fake.unique.user_name()}"
+                password = fake.password(length=12)
+                
+                # Créer l'utilisateur avec les données chiffrées
                 user_data = {
-                    "name": fake.name(),
+                    "name": fake_name,
                     "username": encrypt_data(username),
-                    "password": encrypt_data(fake.password())
+                    "password": encrypt_data(password)
                 }
                 
-                # Créer l'utilisateur
-                user_result = transaction.execute(
-                    users.insert().values(**user_data)
-                )
+                # Insérer l'utilisateur
+                user_result = transaction.execute(users.insert().values(**user_data))
                 user_id = user_result.inserted_primary_key[0]
 
                 # Générer et créer l'adresse associée
@@ -249,25 +259,40 @@ async def fetch_external_users():
                     "zipcode": fake.postcode(),
                     "country": "France"
                 }
-                address_result = transaction.execute(
-                    addresses.insert().values(**address_data)
-                )
-
+                address_result = transaction.execute(addresses.insert().values(**address_data))
+                
+                # Ajouter aux données de retour
                 users_data.append({
                     "user": {
                         "id": user_id,
-                        "name": user_data["name"],
-                        "username": username
+                        "name": fake_name,
+                        "username": username  # Version non chiffrée pour l'affichage
                     },
                     "address": {
                         "id": address_result.inserted_primary_key[0],
-                        **address_data
+                        "user_id": user_id,
+                        "street": address_data["street"],
+                        "zipcode": address_data["zipcode"],
+                        "country": address_data["country"]
                     }
                 })
 
-        return {"message": "Utilisateurs et adresses créés avec succès", "users": users_data}
+        # Métriques
+        USER_OPERATIONS_COUNTER.labels(operation_type="fetch_external").inc(len(users_data))
+        DB_OPERATIONS_PROCESSING_TIME.labels(operation_type="fetch_external").observe(
+            time.time() - start_time
+        )
+
+        return {
+            "message": f"{len(users_data)} utilisateurs et adresses créés avec succès",
+            "users": users_data
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        FAILED_OPERATIONS_COUNTER.labels(operation_type="fetch_external").inc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la création des utilisateurs: {str(e)}"
+        )
 
 @user.delete("/users/{user_id}")
 async def delete_user(user_id: int):
@@ -573,6 +598,7 @@ async def create_user_with_address(user_data: UserCreate, address_data: AddressC
 
 @user.post("/extract-from-faker-db")
 async def extract_from_faker_db(num_users: int = 10):
+    start_time = time.time()
     try:
         # Créer les tables dans la DB faker
         second_meta.drop_all(second_engine, checkfirst=True)
@@ -649,12 +675,17 @@ async def extract_from_faker_db(num_users: int = 10):
                     }
                 })
         
+        USER_OPERATIONS_COUNTER.labels(operation_type="extract_faker").inc(num_users)
+        DB_OPERATIONS_PROCESSING_TIME.labels(operation_type="extract_faker").observe(
+            time.time() - start_time
+        )
         return {
             "message": f"{len(imported_users)} utilisateurs importés avec succès",
             "users": imported_users
         }
         
     except Exception as e:
+        FAILED_OPERATIONS_COUNTER.labels(operation_type="extract_faker").inc()
         raise HTTPException(
             status_code=500,
             detail=f"Erreur lors de l'extraction des données: {str(e)}"
