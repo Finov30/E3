@@ -1,8 +1,8 @@
 from fastapi import APIRouter, File, UploadFile, HTTPException
-from config.database import conn, engine
+from config.database import conn, engine, meta
 from models.indexmodels import users, addresses
 from schemas.userschemas import UserResponse, UserCreate, Address, AddressCreate
-from sqlalchemy import select
+from sqlalchemy import select, MetaData
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, constr
 from typing import List
@@ -17,6 +17,8 @@ from dotenv import load_dotenv
 from faker import Faker
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, MetaData, Table
+import random
 
 load_dotenv()  # Chargement des variables d'environnement
 
@@ -36,6 +38,22 @@ def encrypt_data(data: str) -> str:
 
 def decrypt_data(data: str) -> str:
     return cipher_suite.decrypt(data.encode()).decode()
+
+# Configuration de la deuxième base de données
+SECOND_DATABASE_URL = os.getenv('SECOND_DATABASE_URL', 'mysql+pymysql://root:root@mysql_db:3306/faker_db')
+second_engine = create_engine(SECOND_DATABASE_URL, pool_pre_ping=True)
+second_meta = MetaData()
+
+# Créer des tables spécifiques pour faker_db
+faker_users = Table(
+    'users', second_meta,
+    *[c.copy() for c in users.columns]
+)
+
+faker_addresses = Table(
+    'addresses', second_meta,
+    *[c.copy() for c in addresses.columns]
+)
 
 # Modèles pour les utilisateurs
 class UserCreate(BaseModel):
@@ -551,4 +569,93 @@ async def create_user_with_address(user_data: UserCreate, address_data: AddressC
         raise HTTPException(
             status_code=500,
             detail=f"Erreur lors de la création: {str(e)}"
+        )
+
+@user.post("/extract-from-faker-db")
+async def extract_from_faker_db(num_users: int = 10):
+    try:
+        # Créer les tables dans la DB faker
+        second_meta.drop_all(second_engine, checkfirst=True)
+        second_meta.create_all(second_engine, checkfirst=True)
+        
+        # Générer des données faker dans la seconde DB
+        fake = Faker('fr_FR')
+        faker_users_data = []
+        
+        with second_engine.begin() as second_conn:
+            # Insérer des utilisateurs faker
+            for _ in range(50):  # On crée un pool de 50 utilisateurs
+                username = f"@{fake.unique.user_name()}"
+                user_data = {
+                    "name": fake.name(),
+                    "username": encrypt_data(username),
+                    "password": encrypt_data(fake.password(length=12))
+                }
+                user_result = second_conn.execute(faker_users.insert().values(**user_data))
+                user_id = user_result.inserted_primary_key[0]
+                
+                # Créer une adresse pour chaque utilisateur
+                address_data = {
+                    "user_id": user_id,
+                    "street": fake.street_address(),
+                    "zipcode": fake.postcode(),
+                    "country": "France"
+                }
+                address_result = second_conn.execute(faker_addresses.insert().values(**address_data))
+                
+                faker_users_data.append({
+                    "user": user_data,
+                    "address": address_data,
+                    "user_id": user_id,
+                    "address_id": address_result.inserted_primary_key[0]
+                })
+
+        # Sélectionner aléatoirement num_users utilisateurs
+        selected_users = random.sample(faker_users_data, min(num_users, len(faker_users_data)))
+        
+        # Insérer les utilisateurs sélectionnés dans la DB principale
+        imported_users = []
+        with engine.begin() as main_conn:
+            for user_data in selected_users:
+                # Insérer l'utilisateur
+                new_user = {
+                    "name": user_data["user"]["name"],
+                    "username": user_data["user"]["username"],
+                    "password": user_data["user"]["password"]
+                }
+                user_result = main_conn.execute(users.insert().values(**new_user))
+                new_user_id = user_result.inserted_primary_key[0]
+                
+                # Insérer l'adresse
+                new_address = {
+                    "user_id": new_user_id,
+                    "street": user_data["address"]["street"],
+                    "zipcode": user_data["address"]["zipcode"],
+                    "country": user_data["address"]["country"]
+                }
+                address_result = main_conn.execute(addresses.insert().values(**new_address))
+                
+                imported_users.append({
+                    "user": {
+                        "id": new_user_id,
+                        "name": user_data["user"]["name"],
+                        "username": decrypt_data(user_data["user"]["username"])
+                    },
+                    "address": {
+                        "id": address_result.inserted_primary_key[0],
+                        "street": new_address["street"],
+                        "zipcode": new_address["zipcode"],
+                        "country": new_address["country"]
+                    }
+                })
+        
+        return {
+            "message": f"{len(imported_users)} utilisateurs importés avec succès",
+            "users": imported_users
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de l'extraction des données: {str(e)}"
         )
