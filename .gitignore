@@ -1,1 +1,17 @@
+# Dataset
 data/
+benchmark_results/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environnements virtuels
+venv/
+env/
+.env/
+
+# IDE
+.vscode/
+.idea/

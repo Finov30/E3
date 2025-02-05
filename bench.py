@@ -15,15 +15,19 @@ import os
 from visualize_results import save_and_visualize_results
 from bench_config import device, transform, models_to_test, FULL_CONFIG
 from bench_utils import train_model, evaluate_model
+from dataset_manager import DatasetManager
 
 print(f"Using device: {device}")
 
-# Chargement du dataset Food-101
-dataset_train = Food101(root="./data", split="train", transform=transform, download=True)
-dataset_test = Food101(root="./data", split="test", transform=transform, download=True)
+# Initialisation et vérification du dataset
+dataset_manager = DatasetManager(transform)
+dataset_manager.check_and_prepare_dataset()
 
-train_loader = DataLoader(dataset_train, batch_size=FULL_CONFIG["batch_size"], shuffle=True)
-test_loader = DataLoader(dataset_test, batch_size=FULL_CONFIG["batch_size"], shuffle=False)
+# Chargement des dataloaders
+train_loader, test_loader = dataset_manager.get_dataloaders(
+    batch_size=FULL_CONFIG["batch_size"],
+    num_samples=FULL_CONFIG["num_samples"]
+)
 
 # Benchmark des modèles
 results = {}

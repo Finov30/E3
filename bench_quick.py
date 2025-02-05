@@ -4,19 +4,19 @@ from torchvision.datasets import Food101
 from bench_config import device, transform, models_to_test, QUICK_CONFIG
 from bench_utils import train_model, evaluate_model
 from visualize_results import save_and_visualize_results
+from dataset_manager import DatasetManager
 
 print(f"Using device: {device}")
 
-# Chargement du dataset Food-101
-dataset_train = Food101(root="./data", split="train", transform=transform, download=True)
-dataset_test = Food101(root="./data", split="test", transform=transform, download=True)
+# Initialisation et vérification du dataset
+dataset_manager = DatasetManager(transform)
+dataset_manager.check_and_prepare_dataset()
 
-# Réduction du dataset pour les tests rapides
-dataset_train = torch.utils.data.Subset(dataset_train, range(QUICK_CONFIG["num_samples"]))
-dataset_test = torch.utils.data.Subset(dataset_test, range(QUICK_CONFIG["num_samples"]//2))
-
-train_loader = DataLoader(dataset_train, batch_size=QUICK_CONFIG["batch_size"], shuffle=True)
-test_loader = DataLoader(dataset_test, batch_size=QUICK_CONFIG["batch_size"], shuffle=False)
+# Chargement des dataloaders
+train_loader, test_loader = dataset_manager.get_dataloaders(
+    batch_size=QUICK_CONFIG["batch_size"],
+    num_samples=QUICK_CONFIG["num_samples"]
+)
 
 # Benchmark des modèles
 results = {}
