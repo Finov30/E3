@@ -29,6 +29,6 @@ FULL_CONFIG = {
 # Configuration pour test rapide
 QUICK_CONFIG = {
     "batch_size": 16,
-    "num_samples": 10100,
+    "num_samples": 100,
     "epochs": 1
 } 

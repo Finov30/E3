@@ -1,3 +1,10 @@
+import os
+import warnings
+warnings.filterwarnings('ignore')
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+from mlflow_manager import MLflowManager
+
 def print_banner():
     print("""
 ╔══════════════════════════════════════╗
@@ -21,6 +28,11 @@ def get_user_choice():
 
 def main():
     print_banner()
+    
+    # Initialisation de MLflow
+    mlflow_manager = MLflowManager()
+    if not mlflow_manager.initialize():
+        print("⚠️ Attention: MLflow n'a pas pu être initialisé. Le monitoring sera limité.")
     
     while True:
         choice = get_user_choice()

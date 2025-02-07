@@ -22,8 +22,11 @@ train_loader, test_loader = dataset_manager.get_dataloaders(
 results = {}
 for model_name, model in models_to_test.items():
     print(f"\nTraining {model_name}...")
-    training_time = train_model(model, train_loader, device, epochs=QUICK_CONFIG["epochs"])
-    accuracy = evaluate_model(model, test_loader, device)
+    training_time = train_model(model, train_loader, device, 
+                              epochs=QUICK_CONFIG["epochs"],
+                              model_name=model_name)
+    accuracy = evaluate_model(model, test_loader, device, 
+                            model_name=model_name)
     results[model_name] = {"Training Time (s)": training_time, "Accuracy (%)": accuracy}
 
 print("\nBenchmark Results:")
