@@ -1,0 +1,17 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Python files
+*.py text diff=python eol=lf
+*.pyw text diff=python eol=lf
+
+# Text files
+*.txt text eol=lf
+*.md text eol=lf
+*.csv text eol=lf
+
+# Binary files
+*.pkl binary
+*.h5 binary
+*.pt binary
+*.pth binary 
