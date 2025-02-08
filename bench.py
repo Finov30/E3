@@ -33,9 +33,20 @@ train_loader, test_loader = dataset_manager.get_dataloaders(
 results = {}
 for model_name, model in models_to_test.items():
     print(f"\nTraining {model_name}...")
-    training_time = train_model(model, train_loader, device, epochs=FULL_CONFIG["epochs"])
-    accuracy = evaluate_model(model, test_loader, device)
-    results[model_name] = {"Training Time (s)": training_time, "Accuracy (%)": accuracy}
+    training_time = train_model(model, train_loader, device, 
+                              epochs=FULL_CONFIG["epochs"],
+                              model_name=model_name)
+    metrics = evaluate_model(model, test_loader, device, 
+                           model_name=model_name)
+    
+    # Création du dictionnaire de résultats avec les bonnes conversions
+    results[model_name] = {
+        "Training Time (s)": float(training_time),
+        "Accuracy (%)": float(metrics["test_accuracy"]),
+        "F1 Score (%)": float(metrics["f1_score"]),
+        "Recall (%)": float(metrics["recall_score"]),
+        "ROC AUC (%)": float(metrics["roc_auc_score"]) if not pd.isna(metrics["roc_auc_score"]) else 0.0
+    }
 
 print("\nBenchmark Results:")
 for model, metrics in results.items():

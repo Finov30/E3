@@ -6,6 +6,11 @@ from tqdm import tqdm
 from model_monitor import ModelMonitor
 from mlflow_registry import ModelRegistry
 import mlflow
+import numpy as np
+from sklearn.metrics import f1_score, roc_auc_score, recall_score, classification_report, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+import os
 
 def train_model(model, train_loader, device, epochs=1, model_name=None):
     model.to(device)
@@ -36,7 +41,8 @@ def train_model(model, train_loader, device, epochs=1, model_name=None):
         "batch_size": train_loader.batch_size,
         "device": str(device)
     }
-    monitor.log_metrics(hyperparams, step=0)
+    if monitor.mlflow_active:
+        mlflow.log_params(hyperparams)
     
     start_time = time.time()
     model.train()
@@ -102,48 +108,95 @@ def train_model(model, train_loader, device, epochs=1, model_name=None):
 def evaluate_model(model, test_loader, device, model_name=None):
     monitor = ModelMonitor(model_name or model.__class__.__name__, run_type="evaluation")
     
-    model.to(device)
-    model.eval()
-    correct = 0
-    total = 0
-    all_predictions = []
-    all_labels = []
-    
-    with torch.no_grad():
-        pbar = tqdm(test_loader, desc='Evaluation')
-        for batch_idx, (images, labels) in enumerate(pbar):
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+    try:
+        model.to(device)
+        model.eval()
+        correct = 0
+        total = 0
+        all_predictions = []
+        all_labels = []
+        all_probs = []
+        
+        with torch.no_grad():
+            pbar = tqdm(test_loader, desc='Evaluation')
+            for batch_idx, (images, labels) in enumerate(pbar):
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                probabilities = torch.softmax(outputs, dim=1)
+                _, predicted = torch.max(outputs, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+                
+                # Stockage pour les métriques détaillées
+                all_predictions.extend(predicted.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                all_probs.extend(probabilities.cpu().numpy())
+                
+                # Monitoring par batch
+                accuracy = 100 * correct / total
+                metrics = {
+                    "batch_accuracy": accuracy,
+                    "batch_size": labels.size(0)
+                }
+                monitor.log_batch_metrics(metrics, step=batch_idx)
+                
+                pbar.set_postfix({'accuracy': f'{accuracy:.2f}%'})
+        
+        # Calcul des métriques avancées
+        final_accuracy = 100 * correct / total
+        f1 = f1_score(all_labels, all_predictions, average='weighted')
+        recall = recall_score(all_labels, all_predictions, average='weighted')
+        
+        # Classification report
+        class_report = classification_report(all_labels, all_predictions)
+        
+        # Confusion Matrix
+        try:
+            conf_matrix = confusion_matrix(all_labels, all_predictions)
             
-            # Stockage pour les métriques détaillées
-            all_predictions.extend(predicted.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            # Visualisation de la matrice de confusion
+            plt.figure(figsize=(15, 15))
+            sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+            plt.title(f'Confusion Matrix - {model_name}')
+            plt.xlabel('Predicted')
+            plt.ylabel('True')
             
-            # Monitoring par batch
-            accuracy = 100 * correct / total
-            metrics = {
-                "batch_accuracy": accuracy,
-                "batch_size": labels.size(0)
-            }
-            monitor.log_batch_metrics(metrics, step=batch_idx)
+            # Sauvegarde de la matrice de confusion
+            os.makedirs('benchmark_results', exist_ok=True)
+            confusion_matrix_path = f'benchmark_results/confusion_matrix_{model_name}.png'
+            plt.savefig(confusion_matrix_path)
+            plt.close()
+        except Exception as e:
+            print(f"Attention: Impossible de générer la matrice de confusion: {e}")
+        
+        # Métriques finales
+        final_metrics = {
+            "test_accuracy": float(final_accuracy),
+            "f1_score": float(f1 * 100),
+            "recall_score": float(recall * 100),
+            "total_samples": int(total),
+            "model_name": str(model_name or model.__class__.__name__)
+        }
+        
+        # Log des métriques et rapports
+        if monitor.mlflow_active:
+            # S'assurer que toutes les valeurs sont des float
+            numeric_metrics = {k: float(v) for k, v in final_metrics.items() 
+                             if isinstance(v, (int, float))}
+            mlflow.log_metrics(numeric_metrics)
             
-            pbar.set_postfix({'accuracy': f'{accuracy:.2f}%'})
-    
-    final_accuracy = 100 * correct / total
-    
-    # Métriques finales
-    final_metrics = {
-        "test_accuracy": final_accuracy,
-        "total_samples": total,
-        "model_name": model_name or model.__class__.__name__
-    }
-    monitor.log_metrics(final_metrics)
-    monitor.close()
-    
-    return final_accuracy
+        monitor.log_text("classification_report.txt", class_report)
+        
+        return final_metrics
+        
+    except Exception as e:
+        print(f"Erreur dans evaluate_model: {e}")
+        raise
+    finally:
+        # S'assurer que le monitor est toujours fermé
+        monitor.close()
+        if mlflow.active_run():
+            mlflow.end_run()
 
 def compare_models_performance():
     """Compare les performances des modèles enregistrés"""

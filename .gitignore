@@ -1,12 +1,17 @@
 data/
 benchmark_results/
-
-
+logs/
+mlartifacts/
+mlruns/
+runs/
 __pycache__/
 *.py[cod]
 *$py.class
 
+
+
 venv/
+
 env/
 .env/
 

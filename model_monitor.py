@@ -88,11 +88,15 @@ class ModelMonitor:
 
             # Log dans MLflow
             if self.mlflow_active:
-                numeric_metrics = {
-                    k: float(v) if isinstance(v, (int, float)) else v 
-                    for k, v in metrics.items()
-                    if not isinstance(v, str)  # Exclut les valeurs string
-                }
+                # Filtrer et convertir les métriques pour MLflow
+                numeric_metrics = {}
+                for k, v in metrics.items():
+                    if isinstance(v, (int, float)):
+                        numeric_metrics[k] = float(v)  # Conversion explicite en float
+                    elif isinstance(v, str):
+                        # Les strings doivent être loggés comme des paramètres, pas des métriques
+                        mlflow.log_param(k, v)
+                
                 if numeric_metrics:
                     if step is not None:
                         mlflow.log_metrics(numeric_metrics, step=step)
@@ -306,3 +310,20 @@ class ModelMonitor:
             
         except Exception as e:
             self.logger.error(f"Erreur lors du logging du résumé de l'époque: {e}")
+
+    def log_text(self, filename, content):
+        """Log du texte dans un fichier"""
+        try:
+            # Log dans MLflow
+            if self.mlflow_active:
+                mlflow.log_text(content, filename)
+            
+            # Log dans le fichier local
+            file_path = os.path.join(self.log_dir, filename)
+            with open(file_path, "w") as f:
+                f.write(content)
+            
+            self.logger.info(f"Texte enregistré dans {filename}")
+            
+        except Exception as e:
+            self.logger.error(f"Erreur lors du logging du texte: {e}")
