@@ -1,0 +1,26 @@
+Analyse des confusions pour ResNet-50
+==================================================
+
+Classes les plus confondues:
+chocolate_mousse: 258 confusions
+pork_chop: 254 confusions
+filet_mignon: 244 confusions
+apple_pie: 233 confusions
+beet_salad: 217 confusions
+steak: 216 confusions
+foie_gras: 192 confusions
+bread_pudding: 189 confusions
+ice_cream: 184 confusions
+ravioli: 179 confusions
+
+Paires de confusions spécifiques:
+steak <-> filet_mignon: 85 fois
+chocolate_cake <-> chocolate_mousse: 43 fois
+tuna_tartare <-> beef_tartare: 41 fois
+steak <-> pork_chop: 40 fois
+pork_chop <-> filet_mignon: 28 fois
+tiramisu <-> chocolate_mousse: 22 fois
+chocolate_mousse <-> chocolate_cake: 21 fois
+frozen_yogurt <-> ice_cream: 21 fois
+grilled_cheese_sandwich <-> club_sandwich: 21 fois
+grilled_salmon <-> pork_chop: 21 fois

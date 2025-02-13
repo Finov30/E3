@@ -21,14 +21,30 @@ models_to_test = {
 
 # Configuration pour benchmark complet
 FULL_CONFIG = {
-    "batch_size": 32,
-    "num_samples": None,  # Utilise tout le dataset
-    "epochs": 1
+    "batch_size": 64,
+    "num_samples": None,
+    "epochs": 3
 }
 
 # Configuration pour test rapide
 QUICK_CONFIG = {
-    "batch_size": 16,
-    "num_samples": 100,
-    "epochs": 1
+    "batch_size": 32,
+    "num_samples": 5000,
+    "epochs": 2,
+    "validation_split": 0.2
+}
+
+# Ajout d'une configuration d'optimisation
+OPTIMIZER_CONFIG = {
+    "learning_rate": 0.001,
+    "weight_decay": 1e-4,
+    "momentum": 0.9
+}
+
+# Définition des groupes de plats similaires
+SIMILAR_FOOD_GROUPS = {
+    "pasta_dishes": ["spaghetti_carbonara", "spaghetti_bolognese", "fettuccine_alfredo"],
+    "salads": ["caesar_salad", "greek_salad", "caprese_salad"],
+    "asian_dishes": ["sushi", "sashimi", "spring_rolls", "dumplings"],
+    "pies": ["apple_pie", "pecan_pie", "cherry_pie"]
 } 

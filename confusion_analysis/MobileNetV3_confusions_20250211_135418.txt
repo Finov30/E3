@@ -1,0 +1,26 @@
+Analyse des confusions pour MobileNetV3
+==================================================
+
+Classes les plus confondues:
+tacos: 310 confusions
+breakfast_burrito: 306 confusions
+foie_gras: 293 confusions
+steak: 289 confusions
+omelette: 279 confusions
+nachos: 269 confusions
+bread_pudding: 265 confusions
+crab_cakes: 263 confusions
+risotto: 259 confusions
+huevos_rancheros: 248 confusions
+
+Paires de confusions spécifiques:
+filet_mignon <-> steak: 44 fois
+beef_tartare <-> tuna_tartare: 29 fois
+steak <-> prime_rib: 29 fois
+pork_chop <-> steak: 27 fois
+tuna_tartare <-> beef_tartare: 26 fois
+cheese_plate <-> strawberry_shortcake: 25 fois
+steak <-> filet_mignon: 25 fois
+grilled_cheese_sandwich <-> club_sandwich: 22 fois
+huevos_rancheros <-> nachos: 22 fois
+spring_rolls <-> samosa: 22 fois

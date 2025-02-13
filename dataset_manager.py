@@ -3,6 +3,7 @@ from torchvision.datasets import Food101
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from pathlib import Path
+import torch
 
 class DatasetManager:
     def __init__(self, transform, data_dir="data"):
@@ -30,7 +31,7 @@ class DatasetManager:
         else:
             print("Dataset trouvé!")
             
-    def get_dataloaders(self, batch_size, num_samples=None):
+    def get_dataloaders(self, batch_size=32, num_samples=None):
         """Retourne les dataloaders pour l'entraînement et le test"""
         try:
             # Chargement des datasets avec download=True au cas où
@@ -39,16 +40,36 @@ class DatasetManager:
             dataset_test = Food101(root=str(self.data_dir), split="test", 
                                  transform=self.transform, download=True)
             
-            # Si num_samples est spécifié, on réduit la taille du dataset
-            if num_samples is not None:
-                from torch.utils.data import Subset
-                import torch
-                dataset_train = Subset(dataset_train, range(num_samples))
-                dataset_test = Subset(dataset_test, range(num_samples//2))
+            if num_samples:
+                # Assurer un minimum d'images par classe
+                min_samples_per_class = 20
+                num_samples = max(num_samples, min_samples_per_class * 101)
+                
+                # Stratifier l'échantillonnage pour garder toutes les classes
+                indices = torch.randperm(len(dataset_train))[:num_samples]
+                dataset_train = torch.utils.data.Subset(dataset_train, indices)
+                
+                # Garder un ratio test/train cohérent
+                test_size = int(num_samples * 0.2)
+                test_indices = torch.randperm(len(dataset_test))[:test_size]
+                dataset_test = torch.utils.data.Subset(dataset_test, test_indices)
             
             # Création des dataloaders
-            train_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
-            test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False)
+            train_loader = DataLoader(
+                dataset_train, 
+                batch_size=batch_size, 
+                shuffle=True,
+                num_workers=4,
+                pin_memory=True if torch.cuda.is_available() else False
+            )
+            
+            test_loader = DataLoader(
+                dataset_test, 
+                batch_size=batch_size, 
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True if torch.cuda.is_available() else False
+            )
             
             return train_loader, test_loader
             

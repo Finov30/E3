@@ -176,57 +176,32 @@ class ModelMonitor:
                 self.logger.error(f"Erreur lors du logging du modèle: {e}")
 
     def log_model_architecture(self, model):
-        """Log l'architecture du modèle dans MLflow et TensorBoard"""
         try:
-            # Création d'une description textuelle du modèle
-            model_summary = str(model)
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             
-            # Log dans MLflow
-            if self.mlflow_active:
-                # Log de l'architecture comme texte
-                mlflow.log_text(model_summary, "model_architecture.txt")
-                
-                # Log des paramètres du modèle avec le nom du modèle
-                total_params = sum(p.numel() for p in model.parameters())
-                trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-                
-                architecture_params = {
-                    "model_name": self.model_name,  # Utilisation du nom stocké
-                    "model_type": model.__class__.__name__,
-                    "total_parameters": total_params,
-                    "trainable_parameters": trainable_params,
-                    "layers_count": len(list(model.modules()))
-                }
-                mlflow.log_params(architecture_params)
-                
-                # Ajout d'un tag pour faciliter la recherche
-                mlflow.set_tag("model_architecture", model.__class__.__name__)
-                
-                # Log du graphe du modèle si possible
-                try:
-                    dummy_input = torch.randn(1, 3, 224, 224)
-                    if torch.cuda.is_available():
-                        dummy_input = dummy_input.cuda()
-                        model = model.cuda()
-                    self.writer.add_graph(model, dummy_input)
-                    self.logger.info("Graphe du modèle ajouté à TensorBoard")
-                except Exception as e:
-                    self.logger.warning(f"Impossible d'ajouter le graphe du modèle: {e}")
+            architecture_info = f"""
+            Model Architecture: {model.__class__.__name__}
+            Total parameters: {total_params:,}
+            Trainable parameters: {trainable_params:,}
+            ----------------------------------------
+            {str(model)}
+            """
             
-            # Log dans le fichier local
-            architecture_file = os.path.join(self.log_dir, "model_architecture.txt")
-            with open(architecture_file, "w") as f:
-                f.write(f"Model: {self.model_name}\n")
-                f.write("=" * 50 + "\n")
-                f.write(model_summary)
-                f.write("\n\nParamètres du modèle:\n")
-                f.write(f"Total parameters: {total_params}\n")
-                f.write(f"Trainable parameters: {trainable_params}\n")
+            # Log dans un fichier
+            log_path = os.path.join(self.log_dir, 'model_architecture.txt')
+            with open(log_path, 'w') as f:
+                f.write(architecture_info)
             
-            self.logger.info(f"Architecture du modèle {self.model_name} enregistrée dans {architecture_file}")
+            self.logger.info(f"Architecture du modèle {self.model_name} enregistrée dans {log_path}")
+            
+            # Log dans TensorBoard si disponible
+            if self.writer:
+                self.writer.add_graph(model, torch.randn(1, 3, 224, 224).to(next(model.parameters()).device))
+                self.logger.info("Graphe du modèle ajouté à TensorBoard")
             
         except Exception as e:
-            self.logger.error(f"Erreur lors du logging de l'architecture: {e}")
+            self.logger.error(f"Erreur lors du logging de l'architecture: {str(e)}")
 
     def _log_environment(self):
         """Log des informations sur l'environnement d'exécution"""

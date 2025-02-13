@@ -1,11 +1,9 @@
 import torch
-from torch.utils.data import DataLoader
-from torchvision.datasets import Food101
-from bench_config import device, transform, models_to_test, QUICK_CONFIG
+from bench_config import device, transform, models_to_test, FULL_CONFIG
 from bench_utils import train_model, evaluate_model, analyze_similar_classes
 from visualize_results import save_and_visualize_results
 from dataset_manager import DatasetManager
-import pandas as pd
+import traceback
 
 print(f"Using device: {device}")
 
@@ -13,10 +11,10 @@ print(f"Using device: {device}")
 dataset_manager = DatasetManager(transform)
 dataset_manager.check_and_prepare_dataset()
 
-# Chargement des dataloaders
+# Chargement des dataloaders avec la configuration complète
 train_loader, test_loader = dataset_manager.get_dataloaders(
-    batch_size=QUICK_CONFIG["batch_size"],
-    num_samples=QUICK_CONFIG["num_samples"]
+    batch_size=FULL_CONFIG["batch_size"],
+    num_samples=FULL_CONFIG["num_samples"]  # None pour utiliser tout le dataset
 )
 
 # Benchmark des modèles
@@ -26,7 +24,7 @@ for model_name, model in models_to_test.items():
     try:
         print(f"Début de l'entraînement de {model_name}")
         training_time = train_model(model, train_loader, device, 
-                                  epochs=QUICK_CONFIG["epochs"],
+                                  epochs=FULL_CONFIG["epochs"],
                                   model_name=model_name)
         print(f"Entraînement terminé. Temps: {training_time}")
         
@@ -35,11 +33,11 @@ for model_name, model in models_to_test.items():
                                model_name=model_name)
         print(f"Métriques obtenues: {metrics}")
         
-        # Après l'évaluation de chaque modèle
+        # Analyse des classes similaires
         print("\nAnalyse des classes similaires:")
         analyze_similar_classes(model, test_loader, device, model_name)
         
-        # Création du dictionnaire de résultats avec les bonnes conversions
+        # Stockage des résultats avec conversion explicite en float
         results[model_name] = {
             "Training Time (s)": float(training_time),
             "Accuracy (%)": float(metrics["test_accuracy"]),
@@ -50,16 +48,17 @@ for model_name, model in models_to_test.items():
             "Top-5 Accuracy (%)": float(metrics["top_5_accuracy"])
         }
         print(f"Résultats pour {model_name}: {results[model_name]}")
-        
-        # Vérification que toutes les valeurs sont des nombres
-        for key, value in results[model_name].items():
-            if not isinstance(value, (int, float)) and key != "Model":
-                print(f"Warning: {key} n'est pas un nombre: {value}")
-                results[model_name][key] = 0.0
+
+        # Sauvegarde intermédiaire après chaque modèle
+        try:
+            save_and_visualize_results({k: results[k] for k in results.keys() if k <= model_name}, 
+                                     benchmark_type="full",
+                                     suffix=f"_intermediate_{model_name}")
+        except Exception as viz_error:
+            print(f"Erreur lors de la sauvegarde intermédiaire pour {model_name}: {viz_error}")
 
     except Exception as e:
         print(f"Erreur détaillée lors de l'évaluation de {model_name}:")
-        import traceback
         traceback.print_exc()
         print(f"Message d'erreur: {str(e)}")
         results[model_name] = {
@@ -77,11 +76,26 @@ for model, metrics in results.items():
     print(f"{model}: {metrics}")
 
 try:
-    save_and_visualize_results(results, benchmark_type="quick")
+    # Sauvegarde et visualisation finale
+    save_and_visualize_results(results, benchmark_type="full")
 except Exception as e:
-    print(f"Erreur lors de la visualisation: {e}")
+    print(f"Erreur lors de la visualisation finale: {e}")
+    traceback.print_exc()
     # Affichage des valeurs problématiques
     for model, metrics in results.items():
         print(f"\nModèle: {model}")
         for key, value in metrics.items():
-            print(f"{key}: {value} (type: {type(value)})") 
+            print(f"{key}: {value} (type: {type(value)})")
+
+    # Tentative de sauvegarde en CSV uniquement
+    try:
+        import pandas as pd
+        from datetime import datetime
+        
+        df = pd.DataFrame.from_dict(results, orient='index')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_path = f'benchmark_results/benchmark_full_{timestamp}.csv'
+        df.to_csv(csv_path)
+        print(f"\nLes résultats ont été sauvegardés en CSV: {csv_path}")
+    except Exception as csv_error:
+        print(f"Erreur lors de la sauvegarde en CSV: {csv_error}") 
