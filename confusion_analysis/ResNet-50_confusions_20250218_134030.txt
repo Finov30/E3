@@ -1,0 +1,26 @@
+Analyse des confusions pour ResNet-50
+==================================================
+
+Classes les plus confondues:
+pork_chop: 236 confusions
+filet_mignon: 235 confusions
+chocolate_mousse: 224 confusions
+steak: 205 confusions
+ravioli: 202 confusions
+apple_pie: 195 confusions
+hummus: 195 confusions
+crab_cakes: 194 confusions
+foie_gras: 194 confusions
+tacos: 194 confusions
+
+Paires de confusions spécifiques:
+steak <-> filet_mignon: 65 fois
+pork_chop <-> filet_mignon: 43 fois
+chocolate_mousse <-> chocolate_cake: 29 fois
+tuna_tartare <-> beef_tartare: 26 fois
+steak <-> prime_rib: 25 fois
+chocolate_cake <-> chocolate_mousse: 24 fois
+falafel <-> crab_cakes: 20 fois
+ramen <-> pho: 19 fois
+beef_tartare <-> tuna_tartare: 18 fois
+lobster_bisque <-> clam_chowder: 18 fois

@@ -1,0 +1,26 @@
+Analyse des confusions pour EfficientNet-B0
+==================================================
+
+Classes les plus confondues:
+steak: 272 confusions
+apple_pie: 265 confusions
+foie_gras: 257 confusions
+filet_mignon: 254 confusions
+tacos: 249 confusions
+bread_pudding: 247 confusions
+shrimp_and_grits: 238 confusions
+huevos_rancheros: 236 confusions
+grilled_cheese_sandwich: 235 confusions
+ravioli: 234 confusions
+
+Paires de confusions spécifiques:
+steak <-> filet_mignon: 47 fois
+filet_mignon <-> steak: 41 fois
+beef_tartare <-> tuna_tartare: 33 fois
+pulled_pork_sandwich <-> hamburger: 31 fois
+pork_chop <-> filet_mignon: 27 fois
+ramen <-> pho: 25 fois
+club_sandwich <-> grilled_cheese_sandwich: 24 fois
+chocolate_cake <-> chocolate_mousse: 23 fois
+steak <-> prime_rib: 23 fois
+pork_chop <-> steak: 21 fois

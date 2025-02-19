@@ -7,7 +7,7 @@ from model_monitor import ModelMonitor
 from mlflow_registry import ModelRegistry
 import mlflow
 import numpy as np
-from sklearn.metrics import f1_score, recall_score, classification_report, confusion_matrix
+from sklearn.metrics import f1_score, recall_score, classification_report, confusion_matrix, precision_score
 import seaborn as sns
 import matplotlib.pyplot as plt
 import os
@@ -17,6 +17,14 @@ from torchvision.datasets import Food101
 from datetime import datetime
 import pandas as pd
 import traceback
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LogNorm
+import warnings
+
+# Configuration des warnings Python standards
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 def train_model(model, train_loader, device, epochs=1, model_name=None):
     # S'assurer qu'aucune session MLflow n'est active
@@ -32,34 +40,47 @@ def train_model(model, train_loader, device, epochs=1, model_name=None):
         
         # Modification de la dernière couche en fonction du type de modèle
         if hasattr(model, 'fc'):
-            model.fc = nn.Linear(model.fc.in_features, 101)
+            in_features = model.fc.in_features
+            model.fc = nn.Sequential(
+                nn.Dropout(0.3),
+                nn.Linear(in_features, 101)
+            )
         elif hasattr(model, 'classifier'):
             if isinstance(model.classifier, nn.Sequential):
                 in_features = model.classifier[-1].in_features
-                model.classifier[-1] = nn.Linear(in_features, 101)
+                model.classifier[-1] = nn.Sequential(
+                    nn.Dropout(0.3),
+                    nn.Linear(in_features, 101)
+                )
             else:
                 in_features = model.classifier.in_features
-                model.classifier = nn.Linear(in_features, 101)
+                model.classifier = nn.Sequential(
+                    nn.Dropout(0.3),
+                    nn.Linear(in_features, 101)
+                )
         
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.SGD(model.parameters(), 
                              lr=OPTIMIZER_CONFIG["learning_rate"],
                              momentum=OPTIMIZER_CONFIG["momentum"],
-                             weight_decay=OPTIMIZER_CONFIG["weight_decay"])
+                             weight_decay=2e-4,
+                             nesterov=True)
         
-        # Ajout d'un scheduler pour ajuster le learning rate
+        # Modification du scheduler pour une stratégie plus agressive
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
                                                         mode='min',
                                                         factor=0.1,
                                                         patience=2,
                                                         verbose=True)
 
-        # Ajout de l'augmentation de données
+        # Augmentation de données plus agressive
         data_transforms = transforms.Compose([
             transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            transforms.RandomResizedCrop(224, scale=(0.8, 1.0))
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3),
+            transforms.RandomResizedCrop(224, scale=(0.7, 1.0)),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+            transforms.RandomPerspective(distortion_scale=0.2, p=0.5)
         ])
         
         # Log des hyperparamètres
@@ -130,6 +151,16 @@ def train_model(model, train_loader, device, epochs=1, model_name=None):
                 "epoch_loss": epoch_loss,
                 "epoch_accuracy": epoch_accuracy
             })
+            
+            # Ajout du gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            # Monitoring des gradients
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    monitor.log_metrics({
+                        f"grad_{name}_norm": param.grad.norm().item()
+                    })
         
         training_time = time.time() - start_time
         
@@ -152,6 +183,52 @@ def train_model(model, train_loader, device, epochs=1, model_name=None):
         monitor.close()
         if mlflow.active_run():
             mlflow.end_run()
+
+def get_model_colormap(model_name):
+    """Retourne une colormap spécifique pour chaque modèle"""
+    if "ResNet" in model_name:
+        # Palette de bleus pour ResNet
+        colors = [
+            "#FFFFFF",  # Blanc pour 0
+            "#E6F3FF",  # Bleu très clair
+            "#B3D9FF",  # Bleu clair
+            "#80C0FF",  # Bleu moyen
+            "#4DA6FF",  # Bleu vif
+            "#1A8CFF",  # Bleu intense
+            "#0073E6",  # Bleu profond
+            "#005CB3",  # Bleu foncé
+            "#004080",  # Bleu très foncé
+            "#00264D"   # Bleu nuit
+        ]
+    elif "EfficientNet" in model_name:
+        # Palette de verts pour EfficientNet
+        colors = [
+            "#FFFFFF",  # Blanc pour 0
+            "#E6FFE6",  # Vert très clair
+            "#B3FFB3",  # Vert clair
+            "#80FF80",  # Vert moyen
+            "#4DFF4D",  # Vert vif
+            "#1AFF1A",  # Vert intense
+            "#00E600",  # Vert profond
+            "#00B300",  # Vert foncé
+            "#008000",  # Vert très foncé
+            "#004D00"   # Vert forêt
+        ]
+    else:  # MobileNetV3 et autres
+        # Palette de violets pour MobileNet
+        colors = [
+            "#FFFFFF",  # Blanc pour 0
+            "#F3E6FF",  # Violet très clair
+            "#D9B3FF",  # Violet clair
+            "#C080FF",  # Violet moyen
+            "#A64DFF",  # Violet vif
+            "#8C1AFF",  # Violet intense
+            "#7300E6",  # Violet profond
+            "#5C00B3",  # Violet foncé
+            "#400080",  # Violet très foncé
+            "#26004D"   # Violet nuit
+        ]
+    return LinearSegmentedColormap.from_list("custom", colors)
 
 def evaluate_model(model, test_loader, device, model_name=None):
     monitor = ModelMonitor(model_name or model.__class__.__name__, run_type="evaluation")
@@ -201,8 +278,15 @@ def evaluate_model(model, test_loader, device, model_name=None):
         
         # Calcul des métriques finales
         final_accuracy = 100 * correct / total
-        f1 = f1_score(all_labels, all_predictions, average='weighted')
+        precision = precision_score(all_labels, all_predictions, average='weighted')
         recall = recall_score(all_labels, all_predictions, average='weighted')
+        f1 = f1_score(all_labels, all_predictions, average='weighted')
+        
+        print(f"Debug - Precision: {precision:.4f}")
+        print(f"Debug - Recall: {recall:.4f}")
+        print(f"Debug - F1 calculated: {f1:.4f}")
+        print(f"Debug - F1 from P&R: {2 * (precision * recall) / (precision + recall):.4f}")
+        
         log_loss = running_log_loss / total
         top_k_accuracy = {k: (100 * v / total) for k, v in top_k_correct.items()}
         
@@ -213,26 +297,46 @@ def evaluate_model(model, test_loader, device, model_name=None):
         with open('data/food-101/meta/classes.txt', 'r') as f:
             class_names = [line.strip() for line in f.readlines()]
             
-        # Création d'une figure plus grande et plus lisible
+        # Obtenir la colormap spécifique au modèle
+        custom_cmap = get_model_colormap(model_name)
+        
+        # Ajuster la normalisation pour une meilleure visualisation
+        # Utiliser une normalisation logarithmique avec un seuil minimum ajusté
+        min_value = max(0.1, conf_matrix.min())
+        norm = LogNorm(vmin=min_value, vmax=conf_matrix.max())
+        
+        # Création de la heatmap avec la nouvelle colormap
         plt.figure(figsize=(30, 30))
-        plt.rcParams.update({'font.size': 6})  # Réduire la taille de la police
+        plt.rcParams.update({'font.size': 6})
         
-        # Création de la heatmap avec des annotations plus lisibles
-        sns.heatmap(conf_matrix, 
-                   annot=True,
-                   fmt='d',
-                   cmap='YlOrRd',
-                   xticklabels=class_names,
-                   yticklabels=class_names,
-                   square=True)
+        # Améliorer la lisibilité des annotations
+        sns.heatmap(conf_matrix,
+                    annot=True,
+                    fmt='d',
+                    cmap=custom_cmap,
+                    norm=norm,
+                    xticklabels=class_names,
+                    yticklabels=class_names,
+                    square=True,
+                    cbar_kws={'label': 'Nombre de prédictions'},
+                    annot_kws={'size': 5, 'weight': 'bold'})
         
-        plt.title(f'Matrice de Confusion - {model_name}', pad=20)
-        plt.xlabel('Prédictions', labelpad=10)
-        plt.ylabel('Vraies Classes', labelpad=10)
+        # Amélioration du style et de la lisibilité
+        plt.title(f'Matrice de Confusion - {model_name}',
+                 pad=20,
+                 fontsize=16,
+                 fontweight='bold')
         
-        # Rotation des labels pour une meilleure lisibilité
+        # Ajouter un fond plus clair pour les labels
+        plt.xlabel('Prédictions', labelpad=10, fontsize=12, fontweight='bold')
+        plt.ylabel('Vraies Classes', labelpad=10, fontsize=12, fontweight='bold')
+        
+        # Améliorer la lisibilité des labels
         plt.xticks(rotation=45, ha='right')
         plt.yticks(rotation=45)
+        
+        # Ajouter une grille fine pour mieux distinguer les cellules
+        plt.grid(True, which='minor', color='gray', linewidth=0.1, alpha=0.2)
         
         # Ajuster la mise en page
         plt.tight_layout()
@@ -449,3 +553,114 @@ def analyze_and_save_confusions(model_name, confusion_pairs, timestamp):
     print(f"- CSV résumé: {summary_csv_path}")
     
     return sorted_confusions[0] if sorted_confusions else None
+
+def validate_transforms(image):
+    try:
+        transformed = data_transforms(image)
+        return True
+    except Exception as e:
+        print(f"Erreur de transformation: {e}")
+        return False
+
+def save_and_visualize_results(results, benchmark_type="full", suffix=""):
+    """Sauvegarde et visualise les résultats du benchmark"""
+    try:
+        # Création du dossier de résultats s'il n'existe pas
+        os.makedirs('benchmark_results', exist_ok=True)
+        
+        # Ajout du timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Préparation des données pour le DataFrame
+        data = []
+        for model_name, metrics in results.items():
+            row = {'Model': model_name}
+            row.update(metrics)
+            data.append(row)
+        
+        # Création du DataFrame
+        df = pd.DataFrame(data)
+        
+        # Ajout de la colonne Timestamp
+        df['Timestamp'] = timestamp
+        
+        # Sauvegarde en CSV
+        csv_path = f'benchmark_results/benchmark_{benchmark_type}_{timestamp}{suffix}.csv'
+        df.to_csv(csv_path, index=False)
+        print(f"\nDonnées traitées pour chaque modèle:")
+        for row in data:
+            print(row)
+            
+        print("\nDataFrame final:")
+        print(df.drop('Timestamp', axis=1))
+        
+        # Création des visualisations
+        plt.figure(figsize=(15, 10))
+        
+        # Graphique des métriques principales
+        metrics_to_plot = ['Accuracy (%)', 'F1 Score (%)', 'Top-3 Accuracy (%)', 'Top-5 Accuracy (%)']
+        bar_width = 0.2
+        x = np.arange(len(df['Model']))
+        
+        for i, metric in enumerate(metrics_to_plot):
+            plt.bar(x + i*bar_width, df[metric], bar_width, label=metric)
+        
+        plt.xlabel('Modèles')
+        plt.ylabel('Score (%)')
+        plt.title('Comparaison des performances des modèles')
+        plt.xticks(x + bar_width*1.5, df['Model'], rotation=45)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Sauvegarde du graphique
+        plot_path = f'benchmark_results/benchmark_{benchmark_type}_{timestamp}{suffix}.png'
+        plt.savefig(plot_path, bbox_inches='tight', dpi=300)
+        plt.close()
+        
+        print(f"\nRésultats sauvegardés dans:")
+        print(f"- Graphique: {plot_path}")
+        print(f"- CSV: {csv_path}")
+        
+        # Visualisation de l'historique si disponible
+        try:
+            history_files = sorted(
+                [f for f in os.listdir('benchmark_results') 
+                 if f.startswith(f'benchmark_{benchmark_type}') and f.endswith('.csv')]
+            )
+            
+            if len(history_files) > 1:
+                history_data = []
+                for file in history_files:
+                    hist_df = pd.read_csv(f'benchmark_results/{file}')
+                    if 'Timestamp' not in hist_df.columns:
+                        hist_df['Timestamp'] = file.split('_')[2].split('.')[0]
+                    history_data.append(hist_df)
+                
+                history_df = pd.concat(history_data, ignore_index=True)
+                
+                # Création du graphique d'historique
+                plt.figure(figsize=(15, 10))
+                for model in history_df['Model'].unique():
+                    model_data = history_df[history_df['Model'] == model]
+                    plt.plot(model_data['Timestamp'], model_data['Accuracy (%)'], 
+                            marker='o', label=model)
+                
+                plt.xlabel('Date')
+                plt.ylabel('Accuracy (%)')
+                plt.title('Évolution de la précision au fil du temps')
+                plt.xticks(rotation=45)
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                # Sauvegarde de l'historique
+                history_path = f'benchmark_results/history_{benchmark_type}_{timestamp}.png'
+                plt.savefig(history_path, bbox_inches='tight', dpi=300)
+                plt.close()
+                print(f"- Historique: {history_path}")
+                
+        except Exception as e:
+            print(f"Erreur lors de la visualisation de l'historique: {str(e)}")
+            
+    except Exception as e:
+        print(f"Erreur lors de la sauvegarde des résultats: {str(e)}")
+        traceback.print_exc()

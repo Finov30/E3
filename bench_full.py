@@ -17,6 +17,18 @@ train_loader, test_loader = dataset_manager.get_dataloaders(
     num_samples=FULL_CONFIG["num_samples"]  # None pour utiliser tout le dataset
 )
 
+def check_class_distribution(train_loader):
+    class_counts = {}
+    for _, labels in train_loader:
+        for label in labels:
+            label = label.item()
+            class_counts[label] = class_counts.get(label, 0) + 1
+    return class_counts
+
+# Ajouter avant l'entraînement
+class_distribution = check_class_distribution(train_loader)
+print("Distribution des classes:", class_distribution)
+
 # Benchmark des modèles
 results = {}
 for model_name, model in models_to_test.items():

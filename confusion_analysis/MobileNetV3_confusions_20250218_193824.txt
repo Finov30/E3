@@ -1,0 +1,26 @@
+Analyse des confusions pour MobileNetV3
+==================================================
+
+Classes les plus confondues:
+apple_pie: 338 confusions
+ceviche: 300 confusions
+bread_pudding: 293 confusions
+breakfast_burrito: 283 confusions
+foie_gras: 279 confusions
+samosa: 263 confusions
+scallops: 261 confusions
+filet_mignon: 258 confusions
+grilled_salmon: 256 confusions
+chocolate_mousse: 254 confusions
+
+Paires de confusions spécifiques:
+steak <-> filet_mignon: 36 fois
+hamburger <-> pulled_pork_sandwich: 31 fois
+pork_chop <-> grilled_salmon: 31 fois
+beef_tartare <-> tuna_tartare: 26 fois
+steak <-> baby_back_ribs: 25 fois
+spring_rolls <-> samosa: 23 fois
+bread_pudding <-> apple_pie: 22 fois
+chocolate_cake <-> chocolate_mousse: 22 fois
+club_sandwich <-> grilled_cheese_sandwich: 22 fois
+poutine <-> french_fries: 22 fois
