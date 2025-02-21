@@ -302,3 +302,7 @@ class ModelMonitor:
             
         except Exception as e:
             self.logger.error(f"Erreur lors du logging du texte: {e}")
+
+def get_model_name_prefix(model_name):
+    """Retourne le préfixe du nom du modèle pour MLflow"""
+    return "ResNet-50" if "resnet" in model_name.lower() else model_name

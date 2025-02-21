@@ -9,19 +9,19 @@ def print_banner():
     print("""
 ╔══════════════════════════════════════╗
 ║         Food-101 Benchmark           ║
+║           ResNet-50 Only             ║
 ╚══════════════════════════════════════╝
     """)
 
 def get_user_choice():
     while True:
-        print("\nChoisissez le type de benchmark à exécuter:")
-        print("1. Benchmark rapide (petit échantillon)")
-        print("2. Benchmark complet (dataset entier)")
+        print("\nAppuyez sur:")
+        print("1. Lancer le benchmark complet")
         print("q. Quitter")
         
-        choice = input("\nVotre choix (1, 2 ou q) : ").lower()
+        choice = input("\nVotre choix (1 ou q) : ").lower()
         
-        if choice in ['1', '2', 'q']:
+        if choice in ['1', 'q']:
             return choice
         else:
             print("\nChoix invalide. Veuillez réessayer.")
@@ -42,12 +42,8 @@ def main():
             break
         
         try:
-            if choice == '1':
-                print("\nLancement du benchmark rapide...")
-                import bench_quick
-            else:
-                print("\nLancement du benchmark complet...")
-                import bench
+            print("\nLancement du benchmark complet...")
+            import bench
                 
         except Exception as e:
             print(f"\nUne erreur s'est produite: {str(e)}")

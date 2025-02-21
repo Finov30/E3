@@ -79,4 +79,30 @@ class ModelRegistry:
             return best_version
         except Exception as e:
             self.logger.error(f"Erreur lors de la recherche du meilleur modèle: {e}")
-            return None 
+            return None
+
+def compare_models_performance():
+    """Compare les performances du modèle enregistré"""
+    registry = ModelRegistry()
+    models = ["ResNet-50"]
+    
+    print("\nComparaison du modèle enregistré:")
+    print("=" * 50)
+    
+    for model_name in models:
+        # Récupération des versions en production et staging
+        prod_version = registry.get_best_model(model_name, stage="Production")
+        staging_version = registry.get_best_model(model_name, stage="Staging")
+        
+        print(f"\nModèle: {model_name}")
+        if prod_version:
+            run = mlflow.get_run(prod_version.run_id)
+            print(f"Production (v{prod_version.version}):")
+            print(f"  - Accuracy: {run.data.metrics.get('test_accuracy', 'N/A'):.2f}%")
+            print(f"  - Training Time: {run.data.metrics.get('total_training_time', 'N/A'):.2f}s")
+        
+        if staging_version:
+            run = mlflow.get_run(staging_version.run_id)
+            print(f"Staging (v{staging_version.version}):")
+            print(f"  - Accuracy: {run.data.metrics.get('test_accuracy', 'N/A'):.2f}%")
+            print(f"  - Training Time: {run.data.metrics.get('total_training_time', 'N/A'):.2f}s") 

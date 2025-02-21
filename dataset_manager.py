@@ -11,55 +11,53 @@ class DatasetManager:
         self.root_dir = Path(__file__).parent.parent
         self.data_dir = self.root_dir / data_dir
         
+    def dataset_exists(self):
+        """Vérifie si le dataset Food-101 existe déjà"""
+        data_path = Path('./data/food-101')
+        # Vérifie l'existence des fichiers essentiels
+        required_files = [
+            data_path / 'meta' / 'classes.txt',
+            data_path / 'license_agreement.txt'
+        ]
+        return all(f.exists() for f in required_files)
+
     def check_and_prepare_dataset(self):
-        """Vérifie si le dataset existe et le télécharge si nécessaire"""
-        print("\nVérification du dataset Food-101...")
+        """Vérifie et prépare le dataset si nécessaire"""
+        if self.dataset_exists():
+            print("✓ Dataset Food-101 déjà présent")
+            return
         
-        # Vérifie si le dossier data existe
-        if not self.data_dir.exists():
-            print("Dossier data non trouvé. Création du dossier...")
-            self.data_dir.mkdir(parents=True, exist_ok=True)
+        print("Téléchargement et préparation du dataset Food-101...")
+        # Télécharge le dataset si nécessaire
+        self.train_dataset = Food101(root='./data', split='train', 
+                                    download=True, transform=self.transform)
+        self.test_dataset = Food101(root='./data', split='test', 
+                                   download=True, transform=self.transform)
         
-        # Vérifie si le dataset est déjà téléchargé
-        dataset_path = self.data_dir / 'food-101'
-        meta_path = dataset_path / 'meta'
-        images_path = dataset_path / 'images'
-        
-        if not all(p.exists() for p in [dataset_path, meta_path, images_path]):
-            print("Dataset incomplet ou non trouvé. Téléchargement en cours...")
-            self._download_dataset()
-        else:
-            print("Dataset trouvé!")
-            
-    def get_dataloaders(self, batch_size=32, num_samples=None):
+    def get_dataloaders(self, batch_size=64, num_samples=None):
         """Retourne les dataloaders pour l'entraînement et le test"""
         try:
-            # Chargement des datasets avec download=True au cas où
-            dataset_train = Food101(root=str(self.data_dir), split="train", 
-                                  transform=self.transform, download=True)
-            dataset_test = Food101(root=str(self.data_dir), split="test", 
-                                 transform=self.transform, download=True)
+            print("Chargement du dataset...")
             
-            if num_samples:
-                # Assurer un minimum d'images par classe
-                min_samples_per_class = 20
-                num_samples = max(num_samples, min_samples_per_class * 101)
-                
-                # Stratifier l'échantillonnage pour garder toutes les classes
-                indices = torch.randperm(len(dataset_train))[:num_samples]
-                dataset_train = torch.utils.data.Subset(dataset_train, indices)
-                
-                # Garder un ratio test/train cohérent
-                test_size = int(num_samples * 0.2)
-                test_indices = torch.randperm(len(dataset_test))[:test_size]
-                dataset_test = torch.utils.data.Subset(dataset_test, test_indices)
+            # Chargement des datasets
+            dataset_train = Food101(root='./data', split='train', 
+                                  transform=self.transform, download=False)
+            dataset_test = Food101(root='./data', split='test', 
+                                 transform=self.transform, download=False)
             
-            # Création des dataloaders
+            # Si num_samples est spécifié, on réduit la taille du dataset
+            if num_samples is not None:
+                # Création de sous-ensembles pour le test
+                indices_train = torch.randperm(len(dataset_train))[:num_samples]
+                indices_test = torch.randperm(len(dataset_test))[:num_samples]
+                dataset_train = torch.utils.data.Subset(dataset_train, indices_train)
+                dataset_test = torch.utils.data.Subset(dataset_test, indices_test)
+            
             train_loader = DataLoader(
                 dataset_train, 
                 batch_size=batch_size, 
                 shuffle=True,
-                num_workers=4,
+                num_workers=2,  # Réduit de 4 à 2 pour les tests
                 pin_memory=True if torch.cuda.is_available() else False
             )
             
@@ -67,7 +65,7 @@ class DatasetManager:
                 dataset_test, 
                 batch_size=batch_size, 
                 shuffle=False,
-                num_workers=4,
+                num_workers=2,  # Réduit de 4 à 2 pour les tests
                 pin_memory=True if torch.cuda.is_available() else False
             )
             
@@ -75,10 +73,13 @@ class DatasetManager:
             
         except Exception as e:
             print(f"Erreur lors du chargement du dataset: {str(e)}")
-            print("Tentative de téléchargement...")
-            self._download_dataset()
-            # Retry after download
-            return self.get_dataloaders(batch_size, num_samples)
+            if not self.dataset_exists():
+                print("Tentative de téléchargement...")
+                self.check_and_prepare_dataset()
+                # Retry after download
+                return self.get_dataloaders(batch_size, num_samples)
+            else:
+                raise
     
     def _download_dataset(self):
         """Télécharge le dataset"""
