@@ -14,3 +14,4 @@ run_logs/
 *.pyw
 *.pyz
 *.pywz
+evaluation_results/
