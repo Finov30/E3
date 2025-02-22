@@ -15,3 +15,9 @@ run_logs/
 *.pyz
 *.pywz
 evaluation_results/
+.env
+users.json
+crypto.key
+
+# Environment initialization
+init_config.json

@@ -1,0 +1,33 @@
+# Dossiers de données et modèles
+saved_models/
+data/
+evaluation_results/
+mlartifacts/
+mlruns/
+runs/
+run_logs/
+logs/
+confusion_analysis/
+benchmark_results/
+
+# Fichiers Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+
+# Fichiers de configuration
+.env
+.git
+.gitignore
+.gitattributes
+*.log
+crypto.key
+
+# Autres
+README.md
+Dockerfile
+docker-compose.yml 

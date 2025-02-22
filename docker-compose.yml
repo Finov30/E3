@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  api:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - type: bind
+        source: ./saved_models
+        target: /app/models
+        read_only: true
+      - type: bind
+        source: ./data
+        target: /app/data
+        read_only: true
+      - type: bind
+        source: ./evaluation_results
+        target: /app/evaluation_results
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - SECRET_KEY=${SECRET_KEY}
+      - MODEL_PATH=/app/models/20250221_132302/ResNet-50_acc78.61_20250221_132302.pth
+      # Configuration des utilisateurs initiaux
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - CREATE_DEFAULT_USER=${CREATE_DEFAULT_USER}
+      - DEFAULT_USERNAME=${DEFAULT_USERNAME}
+      - DEFAULT_PASSWORD=${DEFAULT_PASSWORD}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  model-data: 
