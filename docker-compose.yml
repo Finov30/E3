@@ -9,6 +9,9 @@ services:
       - "8000:8000"
     volumes:
       - type: bind
+        source: ./api-test-endpoint
+        target: /app/api-test-endpoint
+      - type: bind
         source: ./saved_models
         target: /app/models
         read_only: true

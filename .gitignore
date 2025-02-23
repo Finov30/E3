@@ -18,6 +18,8 @@ evaluation_results/
 .env
 users.json
 crypto.key
+api-test-endpoint/test_results_*.json
+api-test-endpoint/test_results_*.md
 
 # Environment initialization
 init_config.json

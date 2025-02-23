@@ -28,8 +28,11 @@ WORKDIR /app
 
 # Copier les fichiers nécessaires
 COPY requirements.txt .
-COPY api.py bench_config.py init_environment.py ./
+COPY api.py bench_config.py init_environment.py init_test_env.py test_endpoints.py ./
 COPY entrypoint.sh .
+
+# Créer le dossier de test et copier les fichiers de test
+RUN mkdir -p api-test-endpoint
 
 # Installer les dépendances Python
 RUN python3 -m pip install --no-cache-dir -r requirements.txt \

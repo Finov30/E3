@@ -69,7 +69,38 @@ else:
     print('Mode CPU activé')
 "
 
-# Démarrer l'API
-echo "🚀 Démarrage de l'API..."
-python3 api.py 
-python3 api.py 
+# Initialiser l'environnement de test
+echo "🔧 Initialisation de l'environnement de test..."
+python3 init_test_env.py
+
+# Démarrer l'API en arrière-plan
+python3 api.py &
+
+# Attendre que l'API soit prête
+echo "⏳ Attente du démarrage de l'API..."
+
+# Fonction pour vérifier si l'API est prête
+wait_for_api() {
+    max_attempts=30
+    attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if curl -s http://localhost:8000/docs > /dev/null; then
+            echo "✅ API prête!"
+            return 0
+        fi
+        echo "Tentative $attempt/$max_attempts..."
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    echo "❌ L'API n'a pas démarré à temps"
+    return 1
+}
+
+wait_for_api
+
+# Exécuter les tests
+echo "🧪 Exécution des tests..."
+python3 test_endpoints.py
+
+# Garder l'API en cours d'exécution
+wait 
