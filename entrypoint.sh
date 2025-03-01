@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Initialiser le modèle
+python3 init_model.py
+
 # Vérifier les variables d'environnement nécessaires
 if [ -z "$MODEL_PATH" ]; then
     echo "❌ Erreur: MODEL_PATH non défini"
@@ -9,8 +12,8 @@ fi
 # Vérifier si le modèle existe
 if [ ! -f "$MODEL_PATH" ]; then
     echo "❌ Erreur: Modèle non trouvé à l'emplacement: $MODEL_PATH"
-    echo "Structure du répertoire models:"
-    ls -R /app/models/
+    echo "Structure du répertoire saved_models:"
+    ls -R /app/saved_models/
     echo "Chemin recherché: $MODEL_PATH"
     exit 1
 fi
@@ -103,4 +106,6 @@ echo "🧪 Exécution des tests..."
 python3 test_endpoints.py
 
 # Garder l'API en cours d'exécution
-wait 
+wait
+
+python3 -m uvicorn api:app --host 0.0.0.0 --port 8000 

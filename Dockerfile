@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
 
@@ -28,8 +29,10 @@ WORKDIR /app
 
 # Copier les fichiers nécessaires
 COPY requirements.txt .
-COPY api.py bench_config.py init_environment.py init_test_env.py test_endpoints.py ./
+COPY api.py bench_config.py init_environment.py init_test_env.py test_endpoints.py init_model.py ./
 COPY entrypoint.sh .
+COPY saved_models/ /app/saved_models/
+COPY image-test-apprentissage/ /app/image-test-apprentissage/
 
 # Créer le dossier de test et copier les fichiers de test
 RUN mkdir -p api-test-endpoint
@@ -38,14 +41,22 @@ RUN mkdir -p api-test-endpoint
 RUN python3 -m pip install --no-cache-dir -r requirements.txt \
     && rm -rf /root/.cache/pip
 
-# Créer les dossiers nécessaires
-RUN mkdir -p models data evaluation_results
+# Créer les dossiers nécessaires avec les bonnes permissions
+RUN mkdir -p /app/saved_models/20250221_132302 && \
+    mkdir -p /app/data /app/evaluation_results && \
+    mkdir -p /app/mlruns /app/artifacts && \
+    mkdir -p /app/image-test-apprentissage && \
+    chmod -R 777 /app/mlruns /app/artifacts /app/saved_models /app/image-test-apprentissage
 
 # Exposer le port
 EXPOSE 8000
+EXPOSE 5000
 
 # Rendre le script d'entrée exécutable
 RUN chmod +x entrypoint.sh
+
+# Configurer git pour MLflow
+ENV GIT_PYTHON_REFRESH=quiet
 
 # Commande par défaut
 ENTRYPOINT ["./entrypoint.sh"] 

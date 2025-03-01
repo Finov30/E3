@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Security, Depends, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Security, Depends, Form, Query
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_403_FORBIDDEN
 import torch
@@ -27,25 +27,136 @@ from contextlib import asynccontextmanager
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import jwt
 from jose import JWTError
+from collections import deque
+import torch.optim as optim
+import mlflow
+from torch.utils.data import TensorDataset, DataLoader
+import uuid
+import subprocess
+import time
+import requests
+import copy
+from fastapi.testclient import TestClient
 
 # Chargement des variables d'environnement
 load_dotenv()
 
+# Configuration des constantes
+FEEDBACK_THRESHOLD = 10
+CACHE_TTL_MINUTES = 30
+
+# Définition des caches globaux
+predictions_cache = {}
+feedback_cache = []
+
+class PredictionCache:
+    def __init__(self):
+        self.cache = {}
+        self.ttl = timedelta(minutes=CACHE_TTL_MINUTES)
+    
+    def add(self, prediction_id: str, data: dict):
+        self.cache[prediction_id] = {
+            "data": data,
+            "timestamp": datetime.now()
+        }
+    
+    def get(self, prediction_id: str) -> Optional[dict]:
+        if prediction_id not in self.cache:
+            return None
+        
+        entry = self.cache[prediction_id]
+        if datetime.now() - entry["timestamp"] > self.ttl:
+            del self.cache[prediction_id]
+            return None
+            
+        return entry["data"]
+
+# Initialiser les caches
+predictions_cache = PredictionCache()
+feedback_cache = deque(maxlen=FEEDBACK_THRESHOLD)
+
+# Déclarations globales au début du fichier
+model = None
+device = None
+continuous_learning_manager = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestion du cycle de vie de l'application"""
-    # Startup
-    logger.info("Démarrage de l'API Food101...")
-    load_model()
-    logger.info("API prête à recevoir des requêtes!")
-    yield
-    # Shutdown
-    logger.info("Arrêt de l'API...")
-    global model
-    if model is not None:
-        model = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    try:
+        global model, device, continuous_learning_manager
+        
+        # 1. Initialisation des logs
+        logger.info("🚀 Démarrage de l'API Food101...")
+        
+        # 2. Vérification des dossiers requis
+        required_dirs = [
+            "/app/mlruns",
+            "/app/artifacts",
+            "/app/artifacts/model_backups",
+            "/app/artifacts/training_summaries",
+            "/app/data",
+            "/app/saved_models"
+        ]
+        
+        for directory in required_dirs:
+            try:
+                os.makedirs(directory, exist_ok=True)
+                os.chmod(directory, 0o777)
+                logger.info(f"✅ Dossier créé/vérifié: {directory}")
+            except Exception as e:
+                logger.error(f"❌ Erreur création dossier {directory}: {str(e)}")
+                raise
+        
+        # 3. Configuration de MLflow
+        if not setup_mlflow():
+            logger.error("❌ Configuration MLflow échouée")
+            raise Exception("Échec de la configuration MLflow")
+        logger.info("✅ MLflow configuré")
+        
+        # 4. Chargement du modèle
+        if not load_model():
+            logger.error("❌ Chargement du modèle échoué")
+            raise Exception("Échec du chargement du modèle")
+        logger.info("✅ Modèle chargé")
+        
+        # 5. Initialisation du gestionnaire d'apprentissage continu
+        try:
+            continuous_learning_manager = ContinuousLearningManager(model, device)
+            logger.info("✅ Gestionnaire d'apprentissage continu initialisé")
+        except Exception as e:
+            logger.error(f"❌ Erreur initialisation apprentissage continu: {str(e)}")
+            raise
+        
+        # 6. Test initial d'apprentissage continu
+        try:
+            await test_continuous_learning()
+            logger.info("✅ Test d'apprentissage continu terminé")
+        except Exception as e:
+            logger.error(f"⚠️ Test d'apprentissage continu échoué: {str(e)}")
+            # Ne pas bloquer le démarrage si le test échoue
+        
+        logger.info("✅ API prête à recevoir des requêtes!")
+        yield
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur fatale lors de l'initialisation: {str(e)}")
+        raise
+        
+    finally:
+        # Nettoyage à l'arrêt
+        logger.info("Arrêt de l'API...")
+        if hasattr(app.state, 'mlflow_process'):
+            logger.info("Arrêt du serveur MLflow...")
+            app.state.mlflow_process.terminate()
+            app.state.mlflow_process.wait()
+            logger.info("✅ Serveur MLflow arrêté")
+        
+        if model is not None:
+            model = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("✅ Ressources modèle libérées")
 
 app = FastAPI(
     title="Food101 Classification API",
@@ -70,6 +181,10 @@ def create_access_token(data: dict, expires_delta: timedelta = timedelta(days=1)
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     """Vérifie le token JWT et retourne l'utilisateur"""
+    # Autoriser l'utilisateur système pour les tests
+    if token == "system_test":
+        return "system_test"
+        
     try:
         payload = jwt.decode(token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
         username: str = payload.get("sub")
@@ -230,10 +345,298 @@ class APIKeyManager:
 # Initialisation du gestionnaire de clés API
 api_manager = APIKeyManager()
 
-# Variables globales pour le modèle
-model = None
+# Ajouter après la création de l'app FastAPI
+client = TestClient(app)
+
+# Après les imports et avant les variables globales
+class ContinuousLearningManager:
+    def __init__(self, base_model, device, buffer_size=100, min_feedback=10):
+        # Modèle de base pour les prédictions
+        self.base_model = base_model
+        # Modèle d'entraînement initialisé avec le modèle de base
+        self.training_model = copy.deepcopy(base_model)
+        
+        self.device = device
+        self.criterion = nn.CrossEntropyLoss()
+        self.feedback_buffer = deque(maxlen=buffer_size)
+        self.min_feedback_count = min_feedback
+        
+        # Chemins pour les sauvegardes
+        self.backup_dir = "/app/artifacts/model_backups"
+        os.makedirs(self.backup_dir, exist_ok=True)
+        
+        # Initialiser les classes
+        self._init_classes()
+        
+        # Charger la dernière version d'entraînement si elle existe
+        self.version = self._get_latest_version()
+        if self.version > 0:
+            self._load_latest_training_model()
+        
+        # Optimiser uniquement la dernière couche
+        for param in self.training_model.parameters():
+            param.requires_grad = False
+        self.training_model.fc.requires_grad = True
+        self.optimizer = optim.SGD(self.training_model.fc.parameters(), lr=0.0001, momentum=0.9)
+
+    def _init_classes(self):
+        """Initialise la liste des classes"""
+        try:
+            classes_path = "./data/food-101/meta/classes.txt"
+            if os.path.exists(classes_path):
+                with open(classes_path, 'r') as f:
+                    self.classes = [line.strip() for line in f.readlines()]
+                logger.info(f"✅ {len(self.classes)} classes chargées depuis {classes_path}")
+            else:
+                dataset = Food101(root='./data', split='train', download=True)
+                self.classes = dataset.classes
+                logger.info("✅ Classes chargées depuis le dataset Food101")
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'initialisation des classes: {str(e)}")
+            raise
+
+    def _get_latest_version(self):
+        """Récupère la dernière version du modèle"""
+        try:
+            versions = [int(f.split('v')[1].split('_')[0]) 
+                       for f in os.listdir(self.backup_dir) 
+                       if f.startswith('v') and '_model.pth' in f]
+            return max(versions) if versions else 0
+        except Exception:
+            return 0
+
+    def _save_model_version(self, metrics):
+        """Sauvegarde une nouvelle version du modèle"""
+        try:
+            self.version += 1
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+            
+            # Nom des fichiers
+            model_filename = f"v{self.version}_model_{timestamp}.pth"
+            metadata_filename = f"v{self.version}_metadata.json"
+            
+            # Chemins complets
+            model_path = os.path.join(self.backup_dir, model_filename)
+            metadata_path = os.path.join(self.backup_dir, metadata_filename)
+            
+            # Sauvegarder le modèle
+            save_data = {
+                'model_state_dict': self.training_model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'version': self.version,
+                'timestamp': timestamp,
+                'metrics': metrics
+            }
+            torch.save(save_data, model_path)
+            
+            # Sauvegarder les métadonnées
+            metadata = {
+                'version': self.version,
+                'timestamp': timestamp,
+                'metrics': metrics,
+                'model_file': model_filename
+            }
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=4)
+                
+            logger.info(f"✅ Modèle v{self.version} sauvegardé: {model_filename}")
+            logger.info(f"📊 Métadonnées sauvegardées: {metadata_filename}")
+            
+            return model_path
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la sauvegarde du modèle v{self.version}: {str(e)}")
+            raise
+
+    def _load_latest_training_model(self):
+        """Charge la dernière version du modèle d'entraînement"""
+        try:
+            # Trouver le dernier fichier de modèle
+            model_files = sorted([f for f in os.listdir(self.backup_dir) 
+                                if f.startswith(f'v{self.version}_') and f.endswith('.pth')])
+            if model_files:
+                latest_model = model_files[-1]
+                model_path = os.path.join(self.backup_dir, latest_model)
+                logger.info(f"🔄 Chargement du modèle d'entraînement: {latest_model}")
+                
+                # Charger l'état du modèle
+                checkpoint = torch.load(model_path, map_location=self.device)
+                
+                # Préparer le modèle d'entraînement
+                self.training_model = prepare_model(self.training_model)
+                
+                # Charger les poids
+                if "model_state_dict" in checkpoint:
+                    self.training_model.load_state_dict(checkpoint["model_state_dict"])
+                    if "optimizer_state_dict" in checkpoint:
+                        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                else:
+                    self.training_model.load_state_dict(checkpoint)
+                
+                logger.info("✅ Modèle d'entraînement chargé avec succès")
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur chargement modèle d'entraînement: {str(e)}")
+            # En cas d'erreur, on garde le modèle de base
+            self.training_model = copy.deepcopy(self.base_model)
+            logger.info("⚠️ Utilisation du modèle de base comme modèle d'entraînement")
+
+    async def train_on_feedback(self, feedbacks):
+        """Entraîne le modèle sur les feedbacks"""
+        logger.info(f"\n🚀 Démarrage de l'entraînement v{self.version + 1}")
+        
+        try:
+            # Créer un nom unique pour ce run
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+            run_name = f"training_v{self.version + 1}_{timestamp}"
+            
+            # Vérifier que MLflow est accessible
+            try:
+                mlflow.get_tracking_uri()
+            except Exception as e:
+                logger.error(f"❌ MLflow n'est pas accessible: {str(e)}")
+                raise
+            
+            with mlflow.start_run(run_name=run_name) as run:
+                # Log des paramètres avec vérification
+                params = {
+                    "version": self.version + 1,
+                    "feedback_count": len(feedbacks),
+                    "learning_rate": self.optimizer.param_groups[0]['lr'],
+                    "momentum": 0.9,
+                    "timestamp": timestamp
+                }
+                mlflow.log_params(params)
+                logger.info("✅ Paramètres enregistrés dans MLflow")
+                
+                # Préparation des données
+                train_tensors = []
+                train_labels = []
+                
+                for feedback in feedbacks:
+                    # Corriger la forme du tenseur (4D)
+                    image_tensor = feedback["image_tensor"].squeeze(0)  # Enlever la dimension batch inutile
+                    image_tensor = image_tensor.requires_grad_(True)  # Activer les gradients
+                    
+                    correct_class = feedback["used_class"]
+                    label = self.classes.index(correct_class)
+                    
+                    train_tensors.append(image_tensor)
+                    train_labels.append(label)
+                
+                # Création du dataset avec les bonnes dimensions
+                train_tensors = torch.stack(train_tensors)  # [N, C, H, W]
+                train_labels = torch.tensor(train_labels, dtype=torch.long)
+                dataset = TensorDataset(train_tensors, train_labels)
+                dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+                
+                # Entraînement
+                self.training_model.train()
+                total_loss = 0
+                correct = 0
+                total = 0
+                
+                for batch_idx, (inputs, targets) in enumerate(dataloader):
+                    inputs, targets = inputs.to(self.device), targets.to(self.device)
+                    
+                    self.optimizer.zero_grad()
+                    outputs = self.training_model(inputs)
+                    loss = self.criterion(outputs, targets)
+                    loss.backward()
+                    self.optimizer.step()
+                    
+                    total_loss += loss.item()
+                    _, predicted = outputs.max(1)
+                    total += targets.size(0)
+                    correct += predicted.eq(targets).sum().item()
+                    
+                    # Log des métriques par batch
+                    mlflow.log_metrics({
+                        "batch_loss": loss.item(),
+                        "batch_accuracy": 100 * correct / total
+                    }, step=batch_idx)
+                
+                # Calculer les métriques finales
+                metrics = {
+                    "avg_loss": total_loss / len(dataloader),
+                    "accuracy": 100 * correct / total,
+                    "feedback_count": len(feedbacks)
+                }
+                
+                # Sauvegarder le modèle avec vérification
+                model_filename = f"model_v{self.version + 1}_{timestamp}.pth"
+                model_path = os.path.join("/app/saved_models", model_filename)
+                
+                # Sauvegarder localement d'abord
+                save_data = {
+                    'model_state_dict': self.training_model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'version': self.version + 1,
+                    'metrics': metrics,
+                    'timestamp': timestamp
+                }
+                torch.save(save_data, model_path)
+                logger.info(f"✅ Modèle sauvegardé localement: {model_path}")
+                
+                # Vérifier que le fichier existe
+                if not os.path.exists(model_path):
+                    raise Exception(f"Le fichier modèle n'a pas été créé: {model_path}")
+                
+                # Log dans MLflow avec vérification
+                try:
+                    # Log du modèle
+                    mlflow.pytorch.log_model(
+                        pytorch_model=self.training_model,
+                        artifact_path=f"models/v{self.version + 1}/{timestamp}",
+                        registered_model_name="food101_continuous_learning"
+                    )
+                    logger.info("✅ Modèle enregistré dans MLflow")
+                    
+                    # Log des métriques
+                    mlflow.log_metrics(metrics)
+                    logger.info("✅ Métriques enregistrées dans MLflow")
+                    
+                    # Log des artefacts
+                    mlflow.log_artifact(model_path, f"model_backups/v{self.version + 1}/{timestamp}")
+                    logger.info("✅ Backup du modèle enregistré dans MLflow")
+                    
+                    # Log des métadonnées
+                    metadata = {
+                        'version': self.version + 1,
+                        'timestamp': timestamp,
+                        'metrics': metrics,
+                        'model_file': model_filename,
+                        'run_id': run.info.run_id,
+                        'feedback_count': len(feedbacks)
+                    }
+                    metadata_path = os.path.join("/app/model_metadata", f"metadata_v{self.version + 1}_{timestamp}.json")
+                    with open(metadata_path, 'w') as f:
+                        json.dump(metadata, f, indent=4)
+                    mlflow.log_artifact(metadata_path, f"metadata/v{self.version + 1}/{timestamp}")
+                    logger.info("✅ Métadonnées enregistrées dans MLflow")
+                    
+                except Exception as mlflow_error:
+                    logger.error(f"❌ Erreur lors de l'enregistrement dans MLflow: {str(mlflow_error)}")
+                    raise
+                
+                logger.info(f"✅ Entraînement v{self.version + 1} terminé")
+                logger.info(f"📊 Métriques: {metrics}")
+                logger.info(f"🔍 Run ID MLflow: {run.info.run_id}")
+                logger.info(f"💾 Modèle sauvegardé: {model_filename}")
+                
+                return metrics
+                
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'entraînement: {str(e)}")
+            raise
+
+    def get_prediction_model(self):
+        """Retourne toujours le modèle de base pour les prédictions"""
+        return self.base_model
+
+# Variables globales
 model_name = os.getenv('MODEL_NAME', "ResNet-50_acc78.61_20250221_132302.pth")
-model_path = os.getenv('MODEL_PATH', f"/app/models/20250221_132302/{model_name}")
+model_path = os.getenv('MODEL_PATH', f"/app/saved_models/20250221_132302/{model_name}")
 
 def prepare_model(model):
     """Prépare le modèle avec la même architecture que lors de l'entraînement"""
@@ -246,48 +649,50 @@ def prepare_model(model):
     return model
 
 def load_model():
-    """Charge le modèle une seule fois au démarrage"""
-    global model
+    """Charge le modèle ResNet-50"""
     try:
-        if model is None:
-            logger.info(f"Chargement du modèle: {model_name}")
-            logger.info(f"Chemin du modèle: {model_path}")
+        global model, device
+        
+        # Vérifier CUDA
+        logger.info("🔍 Vérification de CUDA...")
+        cuda_available = torch.cuda.is_available()
+        logger.info(f"CUDA disponible: {cuda_available}")
+        
+        device = torch.device("cuda" if cuda_available else "cpu")
+        if not cuda_available:
+            logger.info("Mode CPU activé")
             
-            if not os.path.exists(model_path):
-                raise FileNotFoundError(f"Modèle non trouvé: {model_path}")
+        # Charger le modèle de base
+        model_name = "ResNet-50"
+        base_model = models_to_test[model_name]["model"]
+        base_model = prepare_model(base_model)  # Ajout de la préparation du modèle
+        base_model = base_model.to(device)
+        
+        # Charger les poids pré-entraînés
+        model_path = "/app/saved_models/20250221_132302/ResNet-50_acc78.61_20250221_132302.pth"
+        if os.path.exists(model_path):
+            logger.info(f"✅ Modèle de base trouvé: {model_path}")
+            checkpoint = torch.load(model_path, map_location=device)
             
-            # Vérifier la taille du fichier
-            file_size = os.path.getsize(model_path) / (1024 * 1024)  # Taille en MB
-            logger.info(f"Taille du modèle: {file_size:.2f} MB")
+            # Extraire l'état du modèle du checkpoint
+            if "model_state_dict" in checkpoint:
+                base_model.load_state_dict(checkpoint["model_state_dict"])
+            else:
+                base_model.load_state_dict(checkpoint)
+                
+            logger.info("✅ Checkpoint du modèle de base chargé avec succès")
+            base_model.eval()
             
-            try:
-                checkpoint = torch.load(model_path, map_location=device)
-                logger.info("Checkpoint chargé avec succès")
-                
-                model = models_to_test["ResNet-50"]
-                logger.info("Modèle ResNet-50 créé")
-                
-                model = prepare_model(model)
-                logger.info("Modèle préparé")
-                
-                model.load_state_dict(checkpoint['model_state_dict'])
-                logger.info("État du modèle chargé")
-                
-                model = model.to(device)
-                model.eval()
-                logger.info("Modèle mis en mode évaluation")
-                
-            except Exception as e:
-                logger.error(f"Erreur lors du chargement du modèle: {str(e)}")
-                logger.exception("Traceback complet:")
-                raise
-            
-            logger.info("✅ Modèle chargé avec succès!")
+            # Assigner le modèle de base à la variable globale
+            model = base_model
+            return True
+        else:
+            logger.error(f"❌ Modèle non trouvé: {model_path}")
+            return False
             
     except Exception as e:
         logger.error(f"❌ Erreur lors du chargement du modèle: {str(e)}")
-        logger.exception("Traceback complet:")
-        raise
+        return False
 
 def process_image(image_bytes):
     """Traite l'image uploadée"""
@@ -328,11 +733,14 @@ async def predict(
             )
         
         logger.info("Prédiction en cours...")
-        # Prédiction
+        # Utiliser le modèle de base pour les prédictions
+        prediction_model = continuous_learning_manager.get_prediction_model()
+        prediction_model.eval()
+        
         with torch.no_grad():
-            output = model(image_tensor)
-            probabilities = torch.nn.functional.softmax(output, dim=1)
-            confidence, predicted = torch.max(probabilities, 1)
+            output = prediction_model(image_tensor)
+            probabilities = torch.nn.functional.softmax(output[0], dim=0)
+            confidence, predicted = torch.max(probabilities, 0)
             
             # Obtenir les top 5 prédictions
             top5_prob, top5_pred = torch.topk(probabilities, 5)
@@ -346,8 +754,8 @@ async def predict(
             # Préparer les résultats des top 5
             for i in range(5):
                 top5_results.append({
-                    "classe": classes[top5_pred[0][i].item()],
-                    "confiance": float(top5_prob[0][i].item()) * 100
+                    "classe": classes[top5_pred[i].item()],
+                    "confiance": float(top5_prob[i].item()) * 100
                 })
             
             # Préparer la réponse
@@ -357,6 +765,15 @@ async def predict(
                 "confidence": float(confidence.item()) * 100,
                 "top5_predictions": top5_results
             }
+            
+            # Ajouter la prédiction au cache
+            prediction_id = f"{file.filename}_{classes[predicted.item()]}_{datetime.now().strftime('%Y%m%d_%H%M')}_{secrets.token_hex(4)}"
+            predictions_cache.add(prediction_id, {
+                "image_tensor": image_tensor,
+                "predicted_class": classes[predicted.item()],
+                "confidence": float(confidence.item()) * 100
+            })
+            response["prediction_id"] = prediction_id
             
             logger.info(f"Prédiction réussie: {response['predicted_class']} ({response['confidence']:.2f}%)")
             return JSONResponse(content=response)
@@ -373,10 +790,7 @@ async def predict(
         )
 
 @app.post("/predict_batch")
-async def predict_batch(
-    files: List[UploadFile] = File(...),
-    current_user: str = Depends(get_current_user)
-):
+async def predict_batch(files: List[UploadFile], current_user: str = Depends(get_current_user)):
     """Prédit la classe de plusieurs images"""
     try:
         # Vérifier si des fichiers ont été envoyés
@@ -400,6 +814,10 @@ async def predict_batch(
         dataset = Food101(root='./data', split='test', download=False)
         classes = dataset.classes
         
+        # Utiliser le modèle de base pour les prédictions
+        prediction_model = continuous_learning_manager.get_prediction_model()
+        prediction_model.eval()
+        
         # Traiter chaque image
         for file in files:
             try:
@@ -413,7 +831,7 @@ async def predict_batch(
                 
                 # Prédiction
                 with torch.no_grad():
-                    output = model(image_tensor)
+                    output = prediction_model(image_tensor)
                     probabilities = torch.nn.functional.softmax(output, dim=1)
                     confidence, predicted = torch.max(probabilities, 1)
                     
@@ -428,11 +846,23 @@ async def predict_batch(
                             "confiance": float(top5_prob[0][i].item()) * 100
                         })
                     
-                    # Ajouter les résultats pour cette image
+                    # Générer un ID unique pour la prédiction
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    prediction_id = f"{file.filename}_{classes[predicted[0].item()]}_{timestamp}_{uuid.uuid4().hex[:8]}"
+                    
+                    # Ajouter au cache
+                    predictions_cache.add(prediction_id, {
+                        "predicted_class": classes[predicted[0].item()],
+                        "image_tensor": image_tensor,
+                        "filename": file.filename
+                    })
+                    
+                    # Ajouter le résultat
                     results.append({
                         "filename": file.filename,
-                        "predicted_class": classes[predicted.item()],
-                        "confidence": float(confidence.item()) * 100,
+                        "prediction_id": prediction_id,
+                        "predicted_class": classes[predicted[0].item()],
+                        "confidence": float(confidence[0].item()) * 100,
                         "top5_predictions": top5_results,
                         "status": "success"
                     })
@@ -470,98 +900,120 @@ async def predict_batch(
 
 @app.post("/predict_zip")
 async def predict_zip(
-    zip_file: UploadFile = File(...),
+    file: UploadFile = File(..., description="Fichier ZIP contenant des images", media_type="application/zip"),
     current_user: str = Depends(get_current_user)
 ):
-    """Prédit la classe des images dans un fichier ZIP"""
+    """Prédit la classe des images contenues dans un fichier zip"""
     try:
-        # Vérifier que c'est bien un fichier ZIP
-        if not zip_file.filename.endswith('.zip'):
+        # Vérifier que le fichier existe et est un ZIP
+        if not file:
+            raise HTTPException(
+                status_code=400,
+                detail="Aucun fichier n'a été envoyé"
+            )
+        
+        # Vérifier l'extension et le type MIME
+        filename = file.filename.lower()
+        content_type = file.content_type or ""
+        
+        if not filename.endswith('.zip') or 'zip' not in content_type:
             raise HTTPException(
                 status_code=400,
                 detail="Le fichier doit être au format ZIP"
             )
-        
-        # Créer un dossier temporaire pour extraire les images
+            
+        # Vérifier que le fichier n'est pas vide
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(
+                status_code=400,
+                detail="Le fichier ZIP est vide"
+            )
+            
+        # Créer un dossier temporaire
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Lire et sauvegarder le fichier ZIP
-            zip_path = os.path.join(temp_dir, "images.zip")
-            contents = await zip_file.read()
+            # Sauvegarder le fichier ZIP
+            zip_path = os.path.join(temp_dir, filename)
             with open(zip_path, 'wb') as f:
                 f.write(contents)
             
             # Extraire les images
-            image_files = []
+            results = []
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                # Vérifier le nombre d'images avant extraction
-                image_count = sum(1 for name in zip_ref.namelist() 
-                                if name.lower().endswith(('.png', '.jpg', '.jpeg')))
+                # Lister les fichiers images
+                image_files = [f for f in zip_ref.namelist() 
+                             if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
                 
-                if image_count > 100:
+                if not image_files:
                     raise HTTPException(
                         status_code=400,
-                        detail="Le ZIP ne doit pas contenir plus de 100 images"
+                        detail="Aucune image trouvée dans le ZIP"
                     )
                 
-                # Extraire les fichiers
-                zip_ref.extractall(temp_dir)
-                # Lister les images
-                for root, _, files in os.walk(temp_dir):
-                    for file in files:
-                        if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            image_files.append(os.path.join(root, file))
-            
-            logger.info(f"Traitement d'un lot de {len(image_files)} images depuis le ZIP...")
-            results = []
-            
-            # Charger les classes une seule fois
-            dataset = Food101(root='./data', split='test', download=False)
-            classes = dataset.classes
-            
-            # Traiter chaque image
-            for img_path in image_files:
-                try:
-                    # Lecture et traitement de l'image
-                    with open(img_path, 'rb') as img_file:
-                        image_tensor = process_image(img_file.read())
-                    
-                    # Prédiction
-                    with torch.no_grad():
-                        output = model(image_tensor)
-                        probabilities = torch.nn.functional.softmax(output, dim=1)
-                        confidence, predicted = torch.max(probabilities, 1)
+                # Charger les classes une seule fois
+                dataset = Food101(root='./data', split='test', download=False)
+                classes = dataset.classes
+                
+                # Utiliser le modèle de base pour les prédictions
+                prediction_model = continuous_learning_manager.get_prediction_model()
+                prediction_model.eval()
+                
+                # Traiter chaque image
+                for img_file in image_files:
+                    try:
+                        # Extraire et lire l'image
+                        zip_ref.extract(img_file, temp_dir)
+                        img_path = os.path.join(temp_dir, img_file)
                         
-                        # Obtenir les top 5 prédictions
-                        top5_prob, top5_pred = torch.topk(probabilities, 5)
-                        top5_results = []
+                        with open(img_path, 'rb') as img:
+                            image_tensor = process_image(img.read())
                         
-                        # Préparer les résultats des top 5
-                        for i in range(5):
-                            top5_results.append({
-                                "classe": classes[top5_pred[0][i].item()],
-                                "confiance": float(top5_prob[0][i].item()) * 100
+                        # Prédiction
+                        with torch.no_grad():
+                            output = prediction_model(image_tensor)
+                            probabilities = torch.nn.functional.softmax(output[0], dim=0)
+                            confidence, predicted = torch.max(probabilities, 0)
+                            
+                            # Top 5 prédictions
+                            top5_prob, top5_pred = torch.topk(probabilities, 5)
+                            top5_results = []
+                            
+                            for i in range(5):
+                                top5_results.append({
+                                    "classe": classes[top5_pred[i].item()],
+                                    "confiance": float(top5_prob[i].item()) * 100
+                                })
+                            
+                            # Générer un ID unique pour la prédiction
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                            prediction_id = f"{img_file}_{classes[predicted.item()]}_{timestamp}_{uuid.uuid4().hex[:8]}"
+                            
+                            # Ajouter au cache
+                            predictions_cache.add(prediction_id, {
+                                "predicted_class": classes[predicted.item()],
+                                "image_tensor": image_tensor,
+                                "filename": img_file
                             })
-                        
-                        # Ajouter les résultats pour cette image
+                            
+                            results.append({
+                                "filename": img_file,
+                                "prediction_id": prediction_id,
+                                "predicted_class": classes[predicted.item()],
+                                "confidence": float(confidence.item()) * 100,
+                                "top5_predictions": top5_results,
+                                "status": "success"
+                            })
+                            
+                    except Exception as img_error:
                         results.append({
-                            "filename": os.path.basename(img_path),
-                            "predicted_class": classes[predicted.item()],
-                            "confidence": float(confidence.item()) * 100,
-                            "top5_predictions": top5_results,
-                            "status": "success"
+                            "filename": img_file,
+                            "status": "error",
+                            "error": str(img_error)
                         })
-                        
-                except Exception as img_error:
-                    results.append({
-                        "filename": os.path.basename(img_path),
-                        "status": "error",
-                        "error": str(img_error)
-                    })
-                    logger.error(f"Erreur lors du traitement de {os.path.basename(img_path)}: {str(img_error)}")
+                        logger.error(f"Erreur lors du traitement de {img_file}: {str(img_error)}")
             
             # Préparer la réponse globale
             response = {
-                "zip_filename": zip_file.filename,
                 "total_images": len(image_files),
                 "successful_predictions": len([r for r in results if r["status"] == "success"]),
                 "failed_predictions": len([r for r in results if r["status"] == "error"]),
@@ -697,6 +1149,250 @@ async def delete_user(
     del api_manager.users[username]
     api_manager._save_users()
     return {"message": f"Utilisateur {username} supprimé"}
+
+async def check_and_train():
+    """Vérifie si l'entraînement automatique doit être lancé"""
+    if len(feedback_cache) >= FEEDBACK_THRESHOLD:
+        logger.info(f"🎯 Buffer plein! ({len(feedback_cache)} feedbacks)")
+        logger.info("✨ Démarrage de l'entraînement automatique...")
+        try:
+            await continuous_learning_manager.train_on_feedback(list(feedback_cache))
+            feedback_cache.clear()  # Réinitialiser le buffer après l'entraînement
+            logger.info("✅ Entraînement automatique terminé avec succès")
+            logger.info("🔄 Buffer réinitialisé")
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'entraînement automatique: {str(e)}")
+            # Même en cas d'erreur, on vide le buffer pour éviter les boucles
+            feedback_cache.clear()
+            logger.info("🔄 Buffer réinitialisé après erreur")
+
+@app.post("/feedback")
+async def feedback(
+    prediction_id: str = Form(...),
+    is_correct: bool = Form(...),
+    correct_class: str = Form(None),
+    current_user: str = Depends(get_current_user)
+):
+    """Soumet un feedback sur une prédiction"""
+    try:
+        prediction = predictions_cache.get(prediction_id)
+        if not prediction:
+            raise HTTPException(status_code=404, detail="Prédiction non trouvée")
+
+        if is_correct:
+            correct_class = prediction.get("predicted_class")
+        elif not correct_class:
+                raise HTTPException(
+                    status_code=400,
+                detail="correct_class est requis quand is_correct=False"
+            )
+
+        dataset = Food101(root='./data', split='test', download=False)
+        if correct_class not in dataset.classes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Classe non valide: '{correct_class}'"
+            )
+        
+        feedback_data = {
+            "prediction_id": prediction_id,
+            "is_correct": is_correct,
+            "used_class": correct_class,
+            "timestamp": datetime.now().isoformat(),
+            "image_tensor": prediction.get("image_tensor"),
+            "original_class": prediction.get("predicted_class")
+        }
+        
+        feedback_cache.append(feedback_data)
+        logger.info(f"✅ Feedback ajouté: {prediction.get('predicted_class')} -> {correct_class} (correct: {is_correct})")
+        
+        await check_and_train()
+        
+        return {"status": "success", "message": "Feedback enregistré"}
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors du traitement du feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/train")
+async def train_model(current_user: str = Depends(get_current_user)):
+    """Lance l'entraînement du modèle sur les feedbacks accumulés"""
+    try:
+        if len(feedback_cache) < FEEDBACK_THRESHOLD:
+            return {
+                "status": "pending",
+                "message": f"Pas assez de feedbacks ({len(feedback_cache)}/{FEEDBACK_THRESHOLD})"
+            }
+
+        logger.info(f"🎯 Démarrage de l'entraînement avec {len(feedback_cache)} feedbacks")
+        await continuous_learning_manager.train_on_feedback(list(feedback_cache))
+        feedback_cache.clear()  # Réinitialiser le buffer après l'entraînement
+        logger.info("🔄 Buffer réinitialisé")
+        
+        return {
+            "status": "success",
+            "message": "Entraînement terminé avec succès"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de l'entraînement: {str(e)}")
+        feedback_cache.clear()  # Réinitialiser même en cas d'erreur
+        logger.info("🔄 Buffer réinitialisé après erreur")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def setup_mlflow():
+    """Configure MLflow pour le tracking des expériences"""
+    try:
+        # Séparer les dossiers MLflow et modèles
+        mlflow_dirs = [
+            "/app/mlruns",  # Pour le tracking MLflow
+            "/app/mlflow_artifacts",  # Pour les artefacts MLflow
+            "/app/mlflow_artifacts/models",  # Pour les modèles MLflow
+            "/app/mlflow_artifacts/metadata"  # Pour les métadonnées MLflow
+        ]
+        
+        model_dirs = [
+            "/app/saved_models",  # Pour les sauvegardes locales des modèles
+            "/app/model_backups",  # Pour les backups des modèles
+            "/app/model_metadata"  # Pour les métadonnées des modèles
+        ]
+        
+        # Créer tous les dossiers nécessaires
+        for directory in mlflow_dirs + model_dirs:
+            os.makedirs(directory, exist_ok=True)
+            os.chmod(directory, 0o777)
+            logger.info(f"✅ Dossier créé/vérifié: {directory}")
+
+        # Configuration MLflow
+        mlflow_process = subprocess.Popen([
+            "mlflow", "server",
+            "--host", "0.0.0.0",
+            "--port", "5000",
+            "--backend-store-uri", "file:///app/mlruns",
+            "--default-artifact-root", "file:///app/mlflow_artifacts",
+            "--workers", "1"
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        time.sleep(5)
+        
+        # Configuration de l'URI MLflow
+        os.environ['MLFLOW_TRACKING_URI'] = "http://0.0.0.0:5000"
+        mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI'])
+        
+        # Créer ou récupérer l'expérience
+        experiment_name = "food101_continuous_learning"
+        try:
+            experiment = mlflow.get_experiment_by_name(experiment_name)
+            if experiment is None:
+                # Créer une nouvelle expérience
+                experiment_id = mlflow.create_experiment(
+                    experiment_name,
+                    artifact_location="file:///app/mlflow_artifacts"
+                )
+                logger.info(f"✨ Nouvelle expérience MLflow créée: {experiment_name}")
+            else:
+                experiment_id = experiment.experiment_id
+                logger.info(f"📊 Expérience MLflow existante: {experiment_name}")
+            
+            # Définir l'expérience active
+            mlflow.set_experiment(experiment_name)
+            logger.info(f"✅ Expérience MLflow active: {experiment_name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la création/récupération de l'expérience: {str(e)}")
+            raise
+        
+        return mlflow_process
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur configuration MLflow: {str(e)}")
+        return None
+
+async def test_continuous_learning():
+    """Test l'apprentissage continu au démarrage avec des images de test"""
+    try:
+        logger.info("🧪 Test de l'apprentissage continu au démarrage...")
+        
+        # Sauvegarder l'état original du modèle
+        original_state = copy.deepcopy(model.state_dict())
+        
+        # Chemin vers le dossier des images de test
+        test_images_dir = "/app/image-test-apprentissage"
+        if not os.path.exists(test_images_dir):
+            logger.error(f"❌ Dossier {test_images_dir} non trouvé")
+            return
+            
+        # Vérifier le contenu du dossier des images
+        logger.info("📂 Contenu du dossier image-test-apprentissage:")
+        logger.info(os.listdir(test_images_dir))
+        
+        # Liste des images de test (limiter à 10)
+        image_files = [f for f in os.listdir(test_images_dir) if f.endswith(('.jpg', '.jpeg', '.png'))][:10]
+        if not image_files:
+            logger.error("❌ Aucune image trouvée dans le dossier de test")
+            return
+            
+        logger.info(f"📸 {len(image_files)} images trouvées pour le test: {image_files}")
+        
+        # Prédiction et feedback pour chaque image
+        predictions = []
+        for image_file in image_files:
+            image_path = os.path.join(test_images_dir, image_file)
+            with open(image_path, 'rb') as f:
+                image_content = f.read()
+                
+            file = UploadFile(
+                file=io.BytesIO(image_content),
+                filename=image_file,
+                headers={"content-type": "image/jpeg"}
+            )
+            
+            response = await predict(file, "system_test")
+            prediction_data = response.body.decode()
+            prediction = json.loads(prediction_data)
+            predictions.append(prediction)
+            logger.info(f"✅ Prédiction faite pour {image_file}")
+            
+        # Envoyer les feedbacks
+        logger.info("🎯 Envoi des feedbacks...")
+        for pred in predictions:
+            try:
+                await feedback(
+                    prediction_id=pred["prediction_id"],
+                    is_correct=True,
+                    correct_class=pred["predicted_class"],
+                    current_user="system_test"
+                )
+                logger.info(f"✅ Feedback envoyé pour {pred['filename']}")
+            except Exception as e:
+                logger.error(f"❌ Erreur lors de l'envoi du feedback pour {pred['filename']}: {str(e)}")
+        
+        # Restaurer l'état original
+        logger.info("🔄 Restauration du modèle original...")
+        model.load_state_dict(original_state)
+        model.eval()
+        logger.info("✅ Modèle original restauré")
+        
+        logger.info("✨ Test d'apprentissage continu terminé")
+        
+    except Exception as e:
+        if original_state:
+            model.load_state_dict(original_state)
+            model.eval()
+            logger.info("🔄 Modèle original restauré après erreur")
+        logger.error(f"❌ Erreur lors du test d'apprentissage continu: {str(e)}")
+
+def create_system_user():
+    """Crée un utilisateur système pour les tests"""
+    system_user = {
+        "username": "system_test",
+        "password": secrets.token_hex(16),
+        "role": "system",
+        "api_keys": {}
+    }
+    if "system_test" not in api_manager.users:
+        api_manager.users["system_test"] = system_user
+    return system_user
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True) 

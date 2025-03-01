@@ -1,9 +1,6 @@
 # Dossiers de données et modèles
-saved_models/
 data/
 evaluation_results/
-mlartifacts/
-mlruns/
 runs/
 run_logs/
 logs/
@@ -29,5 +26,7 @@ crypto.key
 
 # Autres
 README.md
-Dockerfile
-docker-compose.yml 
+docker-compose.yml
+
+# Ne pas ignorer le dossier image-test-apprentissage
+!image-test-apprentissage/ 

@@ -117,7 +117,7 @@ class APITester:
                     status=response.status_code,
                     success=False,
                     request_data={"image_path": image_path},
-                    response_data=response.json(),
+                    response_data=response.json() if response.status_code != 422 else None,
                     headers=headers,
                     files=files
                 )
@@ -149,45 +149,100 @@ class APITester:
             
             if response.status_code == 200:
                 print("✅ Prédiction batch réussie")
-                return self.log_test(endpoint, "POST", response.status_code, True, 
-                                   {"images": image_paths}, response.json(), headers=headers, files=files)
+                return self.log_test(
+                    endpoint=endpoint,
+                    method="POST",
+                    status=response.status_code,
+                    success=True,
+                    request_data={"images": image_paths},
+                    response_data=response.json(),
+                    headers=headers,
+                    files=files
+                )
             else:
                 print(f"❌ Prédiction batch échouée: {response.status_code}")
-                return self.log_test(endpoint, "POST", response.status_code, False, 
-                                   {"images": image_paths}, response.json(), headers=headers, files=files)
+                return self.log_test(
+                    endpoint=endpoint,
+                    method="POST",
+                    status=response.status_code,
+                    success=False,
+                    request_data={"images": image_paths},
+                    response_data=response.json() if response.status_code != 422 else None,
+                    headers=headers,
+                    files=files
+                )
                 
         except Exception as e:
             print(f"❌ Erreur: {str(e)}")
-            return self.log_test(endpoint, "POST", None, False, 
-                               {"images": image_paths}, None, e, headers=headers, files=files)
+            return self.log_test(
+                endpoint=endpoint,
+                method="POST",
+                status=None,
+                success=False,
+                request_data={"images": image_paths},
+                error=e,
+                headers=headers
+            )
 
-    def test_predict_zip(self, zip_path):
-        """Test de l'endpoint predict_zip"""
-        endpoint = "/predict_zip"
+    def test_feedback(self, prediction_id, is_correct=True, correct_class="spaghetti_bolognese", image_path=None):
+        """Test de l'endpoint feedback"""
+        endpoint = "/feedback"
         try:
-            print(f"\n📦 Test de {endpoint}")
-            with open(zip_path, 'rb') as zip_file:
-                files = {'zip_file': zip_file}
-                headers = {'Authorization': f'Bearer {self.token}'}
-                response = requests.post(
-                    f"{self.base_url}{endpoint}",
-                    files=files,
-                    headers=headers
-                )
+            print(f"\n📝 Test de {endpoint}")
+            headers = {'Authorization': f'Bearer {self.token}'}
+            
+            # Préparer les données du formulaire
+            data = {
+                "prediction_id": (None, prediction_id),
+                "is_correct": (None, str(is_correct).lower()),
+                "correct_class": (None, correct_class)
+            }
+            
+            # Ajouter l'image si elle est fournie
+            files = {}
+            if image_path and os.path.exists(image_path):
+                files["image"] = ("image.jpg", open(image_path, "rb"))
+            
+            response = requests.post(
+                f"{self.base_url}{endpoint}",
+                headers=headers,
+                files={**data, **files} if files else data
+            )
             
             if response.status_code == 200:
-                print("✅ Prédiction ZIP réussie")
-                return self.log_test(endpoint, "POST", response.status_code, True, 
-                                   {"zip_file": zip_path}, response.json(), headers=headers, files=files)
+                print("✅ Feedback envoyé avec succès")
+                return self.log_test(
+                    endpoint=endpoint,
+                    method="POST",
+                    status=response.status_code,
+                    success=True,
+                    request_data={"prediction_id": prediction_id, "is_correct": is_correct, "correct_class": correct_class},
+                    response_data=response.json(),
+                    headers=headers
+                )
             else:
-                print(f"❌ Prédiction ZIP échouée: {response.status_code}")
-                return self.log_test(endpoint, "POST", response.status_code, False, 
-                                   {"zip_file": zip_path}, response.json(), headers=headers, files=files)
+                print(f"❌ Envoi du feedback échoué: {response.status_code}")
+                return self.log_test(
+                    endpoint=endpoint,
+                    method="POST",
+                    status=response.status_code,
+                    success=False,
+                    request_data={"prediction_id": prediction_id, "is_correct": is_correct, "correct_class": correct_class},
+                    response_data=response.json() if response.status_code != 422 else None,
+                    headers=headers
+                )
                 
         except Exception as e:
             print(f"❌ Erreur: {str(e)}")
-            return self.log_test(endpoint, "POST", None, False, 
-                               {"zip_file": zip_path}, None, e, headers=headers, files=files)
+            return self.log_test(
+                endpoint=endpoint,
+                method="POST",
+                status=None,
+                success=False,
+                request_data={"prediction_id": prediction_id, "is_correct": is_correct, "correct_class": correct_class},
+                error=e,
+                headers=headers
+            )
 
     def save_results(self):
         """Sauvegarde les résultats des tests"""
@@ -273,13 +328,23 @@ def run_tests():
     tester.login("admin", "prodPassword")
     
     # Test de predict avec une image
-    tester.test_predict(test_files["image"])
+    predict_result = tester.test_predict(test_files["image"])
     
     # Test de predict_batch avec les deux images spécifiques
-    tester.test_predict_batch(test_files["batch_images"])
+    batch_result = tester.test_predict_batch(test_files["batch_images"])
     
     # Test de predict_zip avec le fichier ZIP
-    tester.test_predict_zip(test_files["zip"])
+    zip_result = tester.test_predict_zip(test_files["zip"])
+    
+    # Test du feedback avec le prediction_id de la première prédiction
+    if predict_result and predict_result["success"]:
+        prediction_id = predict_result["response"]["data"]["prediction_id"]
+        tester.test_feedback(
+            prediction_id=prediction_id,
+            is_correct=True,
+            correct_class="spaghetti_bolognese",
+            image_path=test_files["image"]
+        )
     
     # Sauvegarder les résultats
     tester.save_results()

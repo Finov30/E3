@@ -35,4 +35,5 @@ pathlib==1.0.1
 
 # Tests et Développement
 pytest==7.4.3  # Pour les tests unitaires
-requests==2.31.0  # Pour les tests d'API 
+requests==2.31.0  # Pour les tests d'API
+httpx==0.24.1 

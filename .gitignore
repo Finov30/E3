@@ -20,6 +20,7 @@ users.json
 crypto.key
 api-test-endpoint/test_results_*.json
 api-test-endpoint/test_results_*.md
-
+artifacts/
 # Environment initialization
 init_config.json
+artifacts/
