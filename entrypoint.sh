@@ -1,5 +1,23 @@
 #!/bin/bash
 
+# Création des dossiers nécessaires
+mkdir -p /app/mlruns \
+    /app/mlflow_registry \
+    /app/mlflow_artifacts \
+    /app/saved_models \
+    /app/logs \
+    /app/confusion_analysis \
+    /app/benchmark_results
+
+# Attribution des permissions
+chmod -R 777 /app/mlruns
+chmod -R 777 /app/mlflow_registry
+chmod -R 777 /app/mlflow_artifacts
+chmod -R 777 /app/saved_models
+chmod -R 777 /app/logs
+chmod -R 777 /app/confusion_analysis
+chmod -R 777 /app/benchmark_results
+
 # Initialiser le modèle
 python3 init_model.py
 

@@ -1,62 +1,33 @@
-# Image de base avec CUDA
-FROM nvidia/cuda:11.8.0-runtime-ubuntu20.04
+FROM python:3.10-slim
 
-# Configurer l'environnement Python
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Installer Python et les dépendances système
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y \
-    python3.10 \
-    python3.10-distutils \
-    python3-pip \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
-
-# Définir Python 3.10 comme version par défaut
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
-    && update-alternatives --set python3 /usr/bin/python3.10
-
-# Définir le répertoire de travail
 WORKDIR /app
 
-# Copier les fichiers nécessaires
+# Installation des dépendances système
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copie des fichiers requis
 COPY requirements.txt .
-COPY api.py bench_config.py init_environment.py init_test_env.py test_endpoints.py init_model.py ./
-COPY entrypoint.sh .
-COPY saved_models/ /app/saved_models/
-COPY image-test-apprentissage/ /app/image-test-apprentissage/
+COPY . .
 
-# Créer le dossier de test et copier les fichiers de test
-RUN mkdir -p api-test-endpoint
+# Installation des dépendances Python
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Installer les dépendances Python
-RUN python3 -m pip install --no-cache-dir -r requirements.txt \
-    && rm -rf /root/.cache/pip
+# Création des dossiers nécessaires
+RUN mkdir -p /app/mlruns \
+    /app/mlflow_registry \
+    /app/mlflow_artifacts \
+    /app/saved_models \
+    /app/logs \
+    /app/confusion_analysis \
+    /app/benchmark_results \
+    && chmod -R 777 /app
 
-# Créer les dossiers nécessaires avec les bonnes permissions
-RUN mkdir -p /app/saved_models/20250221_132302 && \
-    mkdir -p /app/data /app/evaluation_results && \
-    mkdir -p /app/mlruns /app/artifacts && \
-    mkdir -p /app/image-test-apprentissage && \
-    chmod -R 777 /app/mlruns /app/artifacts /app/saved_models /app/image-test-apprentissage
-
-# Exposer le port
+# Exposition du port
 EXPOSE 8000
 EXPOSE 5000
 
-# Rendre le script d'entrée exécutable
-RUN chmod +x entrypoint.sh
-
-# Configurer git pour MLflow
-ENV GIT_PYTHON_REFRESH=quiet
-
-# Commande par défaut
-ENTRYPOINT ["./entrypoint.sh"] 
+# Commande de démarrage
+CMD ["./entrypoint.sh"] 

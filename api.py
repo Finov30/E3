@@ -37,6 +37,7 @@ import time
 import requests
 import copy
 from fastapi.testclient import TestClient
+import shutil
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -350,279 +351,63 @@ client = TestClient(app)
 
 # Après les imports et avant les variables globales
 class ContinuousLearningManager:
-    def __init__(self, base_model, device, buffer_size=100, min_feedback=10):
-        # Modèle de base pour les prédictions
-        self.base_model = base_model
-        # Modèle d'entraînement initialisé avec le modèle de base
-        self.training_model = copy.deepcopy(base_model)
-        
+    def __init__(self, model, device):
+        self.model = model
         self.device = device
-        self.criterion = nn.CrossEntropyLoss()
-        self.feedback_buffer = deque(maxlen=buffer_size)
-        self.min_feedback_count = min_feedback
+        self.mlflow_dirs = {
+            "tracking": "/app/mlruns",
+            "registry": "/app/mlflow_registry",
+            "artifacts": "/app/mlflow_artifacts"
+        }
         
-        # Chemins pour les sauvegardes
-        self.backup_dir = "/app/artifacts/model_backups"
-        os.makedirs(self.backup_dir, exist_ok=True)
-        
-        # Initialiser les classes
-        self._init_classes()
-        
-        # Charger la dernière version d'entraînement si elle existe
-        self.version = self._get_latest_version()
-        if self.version > 0:
-            self._load_latest_training_model()
-        
-        # Optimiser uniquement la dernière couche
-        for param in self.training_model.parameters():
-            param.requires_grad = False
-        self.training_model.fc.requires_grad = True
-        self.optimizer = optim.SGD(self.training_model.fc.parameters(), lr=0.0001, momentum=0.9)
-
-    def _init_classes(self):
-        """Initialise la liste des classes"""
+    async def train_on_feedback(self, feedback_data):
         try:
-            classes_path = "./data/food-101/meta/classes.txt"
-            if os.path.exists(classes_path):
-                with open(classes_path, 'r') as f:
-                    self.classes = [line.strip() for line in f.readlines()]
-                logger.info(f"✅ {len(self.classes)} classes chargées depuis {classes_path}")
-            else:
-                dataset = Food101(root='./data', split='train', download=True)
-                self.classes = dataset.classes
-                logger.info("✅ Classes chargées depuis le dataset Food101")
-        except Exception as e:
-            logger.error(f"❌ Erreur lors de l'initialisation des classes: {str(e)}")
-            raise
-
-    def _get_latest_version(self):
-        """Récupère la dernière version du modèle"""
-        try:
-            versions = [int(f.split('v')[1].split('_')[0]) 
-                       for f in os.listdir(self.backup_dir) 
-                       if f.startswith('v') and '_model.pth' in f]
-            return max(versions) if versions else 0
-        except Exception:
-            return 0
-
-    def _save_model_version(self, metrics):
-        """Sauvegarde une nouvelle version du modèle"""
-        try:
-            self.version += 1
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+            # Configuration MLflow pour cette session d'entraînement
+            mlflow.set_tracking_uri("http://localhost:5000")
+            experiment = mlflow.get_experiment_by_name("food101_continuous_learning")
             
-            # Nom des fichiers
-            model_filename = f"v{self.version}_model_{timestamp}.pth"
-            metadata_filename = f"v{self.version}_metadata.json"
-            
-            # Chemins complets
-            model_path = os.path.join(self.backup_dir, model_filename)
-            metadata_path = os.path.join(self.backup_dir, metadata_filename)
-            
-            # Sauvegarder le modèle
-            save_data = {
-                'model_state_dict': self.training_model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'version': self.version,
-                'timestamp': timestamp,
-                'metrics': metrics
-            }
-            torch.save(save_data, model_path)
-            
-            # Sauvegarder les métadonnées
-            metadata = {
-                'version': self.version,
-                'timestamp': timestamp,
-                'metrics': metrics,
-                'model_file': model_filename
-            }
-            with open(metadata_path, 'w') as f:
-                json.dump(metadata, f, indent=4)
+            with mlflow.start_run(experiment_id=experiment.experiment_id) as run:
+                # ... reste du code ...
                 
-            logger.info(f"✅ Modèle v{self.version} sauvegardé: {model_filename}")
-            logger.info(f"📊 Métadonnées sauvegardées: {metadata_filename}")
-            
-            return model_path
-            
-        except Exception as e:
-            logger.error(f"❌ Erreur lors de la sauvegarde du modèle v{self.version}: {str(e)}")
-            raise
-
-    def _load_latest_training_model(self):
-        """Charge la dernière version du modèle d'entraînement"""
-        try:
-            # Trouver le dernier fichier de modèle
-            model_files = sorted([f for f in os.listdir(self.backup_dir) 
-                                if f.startswith(f'v{self.version}_') and f.endswith('.pth')])
-            if model_files:
-                latest_model = model_files[-1]
-                model_path = os.path.join(self.backup_dir, latest_model)
-                logger.info(f"🔄 Chargement du modèle d'entraînement: {latest_model}")
+                # Sauvegarde du modèle
+                model_path = f"/app/saved_models/model_v1_{timestamp}.pth"
+                torch.save({
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'epoch': num_epochs,
+                    'loss': running_loss,
+                }, model_path)
                 
-                # Charger l'état du modèle
-                checkpoint = torch.load(model_path, map_location=self.device)
+                # Log du modèle dans MLflow
+                mlflow.log_artifact(model_path, "models")
                 
-                # Préparer le modèle d'entraînement
-                self.training_model = prepare_model(self.training_model)
+                # Sauvegarde des métriques dans MLflow
+                mlflow.log_metrics({
+                    "final_loss": running_loss,
+                    "accuracy": accuracy
+                })
                 
-                # Charger les poids
-                if "model_state_dict" in checkpoint:
-                    self.training_model.load_state_dict(checkpoint["model_state_dict"])
-                    if "optimizer_state_dict" in checkpoint:
-                        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-                else:
-                    self.training_model.load_state_dict(checkpoint)
+                # Sauvegarde des paramètres
+                mlflow.log_params({
+                    "learning_rate": learning_rate,
+                    "batch_size": batch_size,
+                    "num_epochs": num_epochs
+                })
                 
-                logger.info("✅ Modèle d'entraînement chargé avec succès")
-                
-        except Exception as e:
-            logger.error(f"❌ Erreur chargement modèle d'entraînement: {str(e)}")
-            # En cas d'erreur, on garde le modèle de base
-            self.training_model = copy.deepcopy(self.base_model)
-            logger.info("⚠️ Utilisation du modèle de base comme modèle d'entraînement")
-
-    async def train_on_feedback(self, feedbacks):
-        """Entraîne le modèle sur les feedbacks"""
-        logger.info(f"\n🚀 Démarrage de l'entraînement v{self.version + 1}")
-        
-        try:
-            # Créer un nom unique pour ce run
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-            run_name = f"training_v{self.version + 1}_{timestamp}"
-            
-            # Vérifier que MLflow est accessible
-            try:
-                mlflow.get_tracking_uri()
-            except Exception as e:
-                logger.error(f"❌ MLflow n'est pas accessible: {str(e)}")
-                raise
-            
-            with mlflow.start_run(run_name=run_name) as run:
-                # Log des paramètres avec vérification
-                params = {
-                    "version": self.version + 1,
-                    "feedback_count": len(feedbacks),
-                    "learning_rate": self.optimizer.param_groups[0]['lr'],
-                    "momentum": 0.9,
-                    "timestamp": timestamp
-                }
-                mlflow.log_params(params)
-                logger.info("✅ Paramètres enregistrés dans MLflow")
-                
-                # Préparation des données
-                train_tensors = []
-                train_labels = []
-                
-                for feedback in feedbacks:
-                    # Corriger la forme du tenseur (4D)
-                    image_tensor = feedback["image_tensor"].squeeze(0)  # Enlever la dimension batch inutile
-                    image_tensor = image_tensor.requires_grad_(True)  # Activer les gradients
-                    
-                    correct_class = feedback["used_class"]
-                    label = self.classes.index(correct_class)
-                    
-                    train_tensors.append(image_tensor)
-                    train_labels.append(label)
-                
-                # Création du dataset avec les bonnes dimensions
-                train_tensors = torch.stack(train_tensors)  # [N, C, H, W]
-                train_labels = torch.tensor(train_labels, dtype=torch.long)
-                dataset = TensorDataset(train_tensors, train_labels)
-                dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-                
-                # Entraînement
-                self.training_model.train()
-                total_loss = 0
-                correct = 0
-                total = 0
-                
-                for batch_idx, (inputs, targets) in enumerate(dataloader):
-                    inputs, targets = inputs.to(self.device), targets.to(self.device)
-                    
-                    self.optimizer.zero_grad()
-                    outputs = self.training_model(inputs)
-                    loss = self.criterion(outputs, targets)
-                    loss.backward()
-                    self.optimizer.step()
-                    
-                    total_loss += loss.item()
-                    _, predicted = outputs.max(1)
-                    total += targets.size(0)
-                    correct += predicted.eq(targets).sum().item()
-                    
-                    # Log des métriques par batch
-                    mlflow.log_metrics({
-                        "batch_loss": loss.item(),
-                        "batch_accuracy": 100 * correct / total
-                    }, step=batch_idx)
-                
-                # Calculer les métriques finales
-                metrics = {
-                    "avg_loss": total_loss / len(dataloader),
-                    "accuracy": 100 * correct / total,
-                    "feedback_count": len(feedbacks)
-                }
-                
-                # Sauvegarder le modèle avec vérification
-                model_filename = f"model_v{self.version + 1}_{timestamp}.pth"
-                model_path = os.path.join("/app/saved_models", model_filename)
-                
-                # Sauvegarder localement d'abord
-                save_data = {
-                    'model_state_dict': self.training_model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'version': self.version + 1,
+                # Sauvegarde des métadonnées
+                metadata = {
+                    'version': self.version,
+                    'timestamp': timestamp,
                     'metrics': metrics,
-                    'timestamp': timestamp
+                    'model_file': model_filename,
+                    'run_id': run.info.run_id,
+                    'feedback_count': len(feedbacks)
                 }
-                torch.save(save_data, model_path)
-                logger.info(f"✅ Modèle sauvegardé localement: {model_path}")
-                
-                # Vérifier que le fichier existe
-                if not os.path.exists(model_path):
-                    raise Exception(f"Le fichier modèle n'a pas été créé: {model_path}")
-                
-                # Log dans MLflow avec vérification
-                try:
-                    # Log du modèle
-                    mlflow.pytorch.log_model(
-                        pytorch_model=self.training_model,
-                        artifact_path=f"models/v{self.version + 1}/{timestamp}",
-                        registered_model_name="food101_continuous_learning"
-                    )
-                    logger.info("✅ Modèle enregistré dans MLflow")
-                    
-                    # Log des métriques
-                    mlflow.log_metrics(metrics)
-                    logger.info("✅ Métriques enregistrées dans MLflow")
-                    
-                    # Log des artefacts
-                    mlflow.log_artifact(model_path, f"model_backups/v{self.version + 1}/{timestamp}")
-                    logger.info("✅ Backup du modèle enregistré dans MLflow")
-                    
-                    # Log des métadonnées
-                    metadata = {
-                        'version': self.version + 1,
-                        'timestamp': timestamp,
-                        'metrics': metrics,
-                        'model_file': model_filename,
-                        'run_id': run.info.run_id,
-                        'feedback_count': len(feedbacks)
-                    }
-                    metadata_path = os.path.join("/app/model_metadata", f"metadata_v{self.version + 1}_{timestamp}.json")
-                    with open(metadata_path, 'w') as f:
-                        json.dump(metadata, f, indent=4)
-                    mlflow.log_artifact(metadata_path, f"metadata/v{self.version + 1}/{timestamp}")
-                    logger.info("✅ Métadonnées enregistrées dans MLflow")
-                    
-                except Exception as mlflow_error:
-                    logger.error(f"❌ Erreur lors de l'enregistrement dans MLflow: {str(mlflow_error)}")
-                    raise
-                
-                logger.info(f"✅ Entraînement v{self.version + 1} terminé")
-                logger.info(f"📊 Métriques: {metrics}")
-                logger.info(f"🔍 Run ID MLflow: {run.info.run_id}")
-                logger.info(f"💾 Modèle sauvegardé: {model_filename}")
+                metadata_path = os.path.join("/app/model_metadata", f"metadata_v{self.version + 1}_{timestamp}.json")
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=4)
+                mlflow.log_artifact(metadata_path, f"metadata/v{self.version + 1}/{timestamp}")
+                logger.info("✅ Métadonnées enregistrées dans MLflow")
                 
                 return metrics
                 
@@ -632,7 +417,7 @@ class ContinuousLearningManager:
 
     def get_prediction_model(self):
         """Retourne toujours le modèle de base pour les prédictions"""
-        return self.base_model
+        return self.model
 
 # Variables globales
 model_name = os.getenv('MODEL_NAME', "ResNet-50_acc78.61_20250221_132302.pth")
@@ -1244,66 +1029,69 @@ def setup_mlflow():
     """Configure MLflow pour le tracking des expériences"""
     try:
         # Séparer les dossiers MLflow et modèles
-        mlflow_dirs = [
-            "/app/mlruns",  # Pour le tracking MLflow
-            "/app/mlflow_artifacts",  # Pour les artefacts MLflow
-            "/app/mlflow_artifacts/models",  # Pour les modèles MLflow
-            "/app/mlflow_artifacts/metadata"  # Pour les métadonnées MLflow
-        ]
+        mlflow_dirs = {
+            "tracking": "/app/mlruns",
+            "registry": "/app/mlflow_registry",
+            "artifacts": "/app/mlflow_artifacts"
+        }
         
-        model_dirs = [
-            "/app/saved_models",  # Pour les sauvegardes locales des modèles
-            "/app/model_backups",  # Pour les backups des modèles
-            "/app/model_metadata"  # Pour les métadonnées des modèles
-        ]
-        
-        # Créer tous les dossiers nécessaires
-        for directory in mlflow_dirs + model_dirs:
-            os.makedirs(directory, exist_ok=True)
-            os.chmod(directory, 0o777)
-            logger.info(f"✅ Dossier créé/vérifié: {directory}")
+        # Créer tous les dossiers nécessaires avec les bonnes permissions
+        for dir_name, dir_path in mlflow_dirs.items():
+            os.makedirs(dir_path, exist_ok=True)
+            os.chmod(dir_path, 0o777)
+            logger.info(f"✅ Dossier MLflow {dir_name} créé/vérifié: {dir_path}")
 
-        # Configuration MLflow
+        # Configuration du serveur MLflow avec le bon stockage d'artefacts
         mlflow_process = subprocess.Popen([
             "mlflow", "server",
             "--host", "0.0.0.0",
             "--port", "5000",
-            "--backend-store-uri", "file:///app/mlruns",
-            "--default-artifact-root", "file:///app/mlflow_artifacts",
+            "--backend-store-uri", f"file://{mlflow_dirs['tracking']}",
+            "--default-artifact-root", f"file://{mlflow_dirs['artifacts']}",
+            "--artifacts-destination", f"file://{mlflow_dirs['artifacts']}",
+            "--registry-store-uri", f"file://{mlflow_dirs['registry']}",
+            "--serve-artifacts",
             "--workers", "1"
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
-        time.sleep(5)
+        time.sleep(5)  # Attendre que le serveur démarre
         
         # Configuration de l'URI MLflow
-        os.environ['MLFLOW_TRACKING_URI'] = "http://0.0.0.0:5000"
-        mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI'])
+        mlflow.set_tracking_uri("http://localhost:5000")
+        
+        # Configuration du stockage d'artefacts local
+        mlflow.artifacts.local.LocalArtifactRepository.get_path = lambda self, artifact_path: \
+            os.path.join(mlflow_dirs['artifacts'], artifact_path)
         
         # Créer ou récupérer l'expérience
         experiment_name = "food101_continuous_learning"
         try:
             experiment = mlflow.get_experiment_by_name(experiment_name)
             if experiment is None:
-                # Créer une nouvelle expérience
                 experiment_id = mlflow.create_experiment(
                     experiment_name,
-                    artifact_location="file:///app/mlflow_artifacts"
+                    artifact_location=f"file://{mlflow_dirs['artifacts']}"
                 )
                 logger.info(f"✨ Nouvelle expérience MLflow créée: {experiment_name}")
             else:
                 experiment_id = experiment.experiment_id
                 logger.info(f"📊 Expérience MLflow existante: {experiment_name}")
             
-            # Définir l'expérience active
             mlflow.set_experiment(experiment_name)
-            logger.info(f"✅ Expérience MLflow active: {experiment_name}")
+            
+            # Vérifier que le serveur est bien démarré
+            response = requests.get("http://localhost:5000/api/2.0/mlflow/experiments/list")
+            if response.status_code == 200:
+                logger.info("✅ Serveur MLflow démarré et accessible")
+            else:
+                logger.error(f"❌ Erreur serveur MLflow: {response.status_code}")
+                
+            return mlflow_process
             
         except Exception as e:
-            logger.error(f"❌ Erreur lors de la création/récupération de l'expérience: {str(e)}")
+            logger.error(f"❌ Erreur lors de la configuration de l'expérience: {str(e)}")
             raise
-        
-        return mlflow_process
-        
+            
     except Exception as e:
         logger.error(f"❌ Erreur configuration MLflow: {str(e)}")
         return None
@@ -1375,12 +1163,105 @@ async def test_continuous_learning():
         
         logger.info("✨ Test d'apprentissage continu terminé")
         
+        # Vérification des chemins d'enregistrement
+        await verify_model_paths()
+        
     except Exception as e:
         if original_state:
             model.load_state_dict(original_state)
             model.eval()
             logger.info("🔄 Modèle original restauré après erreur")
         logger.error(f"❌ Erreur lors du test d'apprentissage continu: {str(e)}")
+
+async def verify_model_paths():
+    """Vérifie les chemins d'enregistrement des modèles et artefacts"""
+    try:
+        logger.info("🔍 Vérification des chemins d'enregistrement...")
+        
+        # Liste des chemins à vérifier avec leurs sous-dossiers requis
+        paths_to_check = {
+            "Modèles sauvegardés": {
+                "path": "/app/saved_models",
+                "subdirs": []
+            },
+            "MLflow": {
+                "path": "/app/mlruns",
+                "subdirs": ["0", "1"]
+            },
+            "Artefacts MLflow": {
+                "path": "/app/mlflow_artifacts",
+                "subdirs": ["models", "metadata"]
+            },
+            "Artefacts": {
+                "path": "/app/artifacts",
+                "subdirs": ["model_backups", "training_summaries"]
+            },
+            "Logs": {
+                "path": "/app/logs",
+                "subdirs": []
+            },
+            "Confusion analysis": {
+                "path": "/app/confusion_analysis",
+                "subdirs": ["csv"]
+            },
+            "Benchmark results": {
+                "path": "/app/benchmark_results",
+                "subdirs": []
+            }
+        }
+        
+        # Vérification de chaque chemin et ses sous-dossiers
+        for path_name, config in paths_to_check.items():
+            path = config["path"]
+            if os.path.exists(path):
+                # Calcul de la taille et du nombre de fichiers
+                size = sum(os.path.getsize(os.path.join(dirpath, filename))
+                          for dirpath, _, filenames in os.walk(path)
+                          for filename in filenames) / (1024 * 1024)  # Taille en MB
+                
+                files_count = sum(len(files) for _, _, files in os.walk(path))
+        
+        # Vérification des permissions
+        for path_name, config in paths_to_check.items():
+            path = config["path"]
+            if os.path.exists(path):
+                try:
+                    # Test d'écriture dans le dossier principal
+                    test_file = os.path.join(path, ".test_write")
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    logger.info(f"✅ Permissions d'écriture OK pour {path_name}")
+                    
+                    # Test d'écriture dans les sous-dossiers
+                    for subdir in config["subdirs"]:
+                        subdir_path = os.path.join(path, subdir)
+                        if os.path.exists(subdir_path):
+                            test_file = os.path.join(subdir_path, ".test_write")
+                            with open(test_file, 'w') as f:
+                                f.write("test")
+                            os.remove(test_file)
+                            logger.info(f"   └── Permissions OK dans {subdir}")
+                except Exception as e:
+                    logger.error(f"❌ Problème de permissions sur {path}: {str(e)}")
+        
+        # Vérification spécifique de MLflow
+        try:
+            mlflow_url = "http://localhost:5000"
+            response = requests.get(f"{mlflow_url}/api/2.0/mlflow/experiments/list")
+            if response.status_code == 200:
+                logger.info("✅ Serveur MLflow accessible")
+                logger.info(f"   └── Expériences trouvées: {len(response.json().get('experiments', []))}")
+            else:
+                logger.error(f"❌ Erreur d'accès au serveur MLflow: {response.status_code}")
+        except Exception as e:
+            logger.error(f"❌ Serveur MLflow inaccessible: {str(e)}")
+        
+        logger.info("✨ Vérification des chemins terminée")
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la vérification des chemins: {str(e)}")
+        raise
 
 def create_system_user():
     """Crée un utilisateur système pour les tests"""
@@ -1393,6 +1274,42 @@ def create_system_user():
     if "system_test" not in api_manager.users:
         api_manager.users["system_test"] = system_user
     return system_user
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Nettoyage à l'arrêt de l'API"""
+    logger.info("Arrêt de l'API...")
+    
+    # Arrêt propre du serveur MLflow
+    if hasattr(app.state, 'mlflow_process'):
+        logger.info("Arrêt du serveur MLflow...")
+        app.state.mlflow_process.terminate()
+        app.state.mlflow_process.wait()
+        logger.info("✅ Serveur MLflow arrêté")
+    
+    # Nettoyage des fichiers temporaires
+    temp_dirs = ['/tmp/mlruns', '/tmp/mlflow']
+    for d in temp_dirs:
+        if os.path.exists(d):
+            shutil.rmtree(d)
+            logger.info(f"✅ Nettoyage de {d}")
+
+@app.get("/health/mlflow")
+async def check_mlflow_health():
+    """Vérifie l'état de santé de MLflow"""
+    try:
+        response = requests.get("http://localhost:5000/api/2.0/mlflow/experiments/list")
+        if response.status_code == 200:
+            experiments = response.json().get('experiments', [])
+            return {
+                "status": "healthy",
+                "experiments_count": len(experiments),
+                "artifacts_path": "/app/mlflow_artifacts",
+                "tracking_path": "/app/mlruns"
+            }
+        return {"status": "unhealthy", "error": f"MLflow returned {response.status_code}"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True) 

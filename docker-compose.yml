@@ -8,11 +8,15 @@ services:
       - "5000:5000"
     volumes:
       - ./saved_models:/app/saved_models
+      - ./mlruns:/app/mlruns
+      - ./mlflow_registry:/app/mlflow_registry
+      - ./mlflow_artifacts:/app/mlflow_artifacts
+      - ./logs:/app/logs
+      - ./confusion_analysis:/app/confusion_analysis
+      - ./benchmark_results:/app/benchmark_results
       - ./data:/app/data
       - ./evaluation_results:/app/evaluation_results
       - ./api-test-endpoint:/app/api-test-endpoint
-      - ./mlruns:/app/mlruns
-      - ./artifacts:/app/artifacts
       - ./image-test-apprentissage:/app/image-test-apprentissage
     environment:
       - CUDA_VISIBLE_DEVICES=0
@@ -30,6 +34,7 @@ services:
       - MLFLOW_TRACKING_PASSWORD=password
       - MLFLOW_SERVE_ARTIFACTS=true
       - MLFLOW_ARTIFACT_ROOT=/app/artifacts
+      - PYTHONUNBUFFERED=1
     deploy:
       resources:
         reservations:
